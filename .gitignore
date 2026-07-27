@@ -1,0 +1,79 @@
+# =============================================================================
+# PitWall — .gitignore
+# =============================================================================
+
+# ── Secrets & config ──────────────────────────────────────────────────────
+.env
+
+# ── Generated artifacts (re-created by scripts/ingest.py) ─────────────────
+parents.pkl
+chroma_parent_child_db/
+
+# ── Source PDF documents (large & potentially copyright-restricted) ────────
+data/
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# ── Virtual environments ───────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── IDE / editor ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+
+# ── Jupyter ───────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Logs & temp ───────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.swp
+
+# ── HuggingFace model cache (large, downloaded automatically) ─────────────
+.cache/
+huggingface/
+
+# ── Superseded root-level files (kept locally for reference, not tracked) ──
+/backend.py
+/frontend.py
+/bkp.py
+/main.py
+/api.py
+/app.py
+/ingest.py

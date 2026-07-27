@@ -1,0 +1,39 @@
+# PitWall — Python Dependencies
+# Install into a virtual environment:
+#   python -m venv venv
+#   venv\Scripts\activate          (Windows)
+#   pip install -r requirements.txt
+
+# ── Web framework ─────────────────────────────────────────────────────────
+fastapi==0.139.2
+uvicorn[standard]==0.35.0
+pydantic>=2.0
+
+# ── Frontend ──────────────────────────────────────────────────────────────
+streamlit==1.59.2
+
+# ── LangChain ecosystem ───────────────────────────────────────────────────
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-huggingface
+langchain-classic
+langchain-text-splitters
+
+# ── Vector store ──────────────────────────────────────────────────────────
+chromadb==1.5.9
+
+# ── Embeddings ────────────────────────────────────────────────────────────
+sentence-transformers
+huggingface_hub
+
+# ── Reranker ──────────────────────────────────────────────────────────────
+FlashRank==0.2.10
+
+# ── Document loading ──────────────────────────────────────────────────────
+pypdf
+
+# ── Utilities ─────────────────────────────────────────────────────────────
+python-dotenv
+requests
