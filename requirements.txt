@@ -31,6 +31,9 @@ huggingface_hub
 # ── Reranker ──────────────────────────────────────────────────────────────
 FlashRank==0.2.10
 
+# ── Hybrid search (BM25 sparse retriever) ─────────────────────────────────
+rank-bm25
+
 # ── Document loading ──────────────────────────────────────────────────────
 pypdf
 

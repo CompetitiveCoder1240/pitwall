@@ -7,7 +7,13 @@
 
 # ── Generated artifacts (re-created by scripts/ingest.py) ─────────────────
 parents.pkl
+bm25_corpus.pkl
 chroma_parent_child_db/
+
+# ── Evaluation outputs ────────────────────────────────────────────────────
+evaluation_results.json
+retrieval_eval_results.json
+golden_dataset_50.json
 
 # ── Source PDF documents (large & potentially copyright-restricted) ────────
 data/
