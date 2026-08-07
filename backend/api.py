@@ -44,12 +44,14 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 
 # Hybrid search components
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
+from langchain_classic.retrievers import EnsembleRetriever
 
 # For async retriever wrapper
 from langchain_core.retrievers import BaseRetriever
 
 load_dotenv()
+# Ensure unused DATABASE_URL doesn't trigger background SQLAlchemy/Supabase connections
+os.environ.pop("DATABASE_URL", None)
 
 # ---------------------------------------------------------------------------
 # Paths — always resolved relative to the project root (two levels up from

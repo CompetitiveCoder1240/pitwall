@@ -35,8 +35,13 @@ Evaluated against the **50-Question Golden Test Dataset** (`golden_dataset_50.js
 pitwall/
 ├── backend/
 │   └── api.py                  # FastAPI server (v2 Hybrid RAG + Async SSE streaming)
+├── frontend-next/              # 🔥 NEW: Next.js 14+ Premium F1 Carbon/Red Frontend
+│   ├── app/                    # Next.js App Router pages & layouts
+│   ├── components/             # Telemetry Header, Sidebar, Chat Feed, Suggestion Cards
+│   ├── hooks/                  # useSSEChat custom React hook
+│   └── package.json
 ├── frontend/
-│   └── app.py                  # Streamlit F1 Dark/Red UI
+│   └── app.py                  # Legacy Streamlit UI
 ├── scripts/
 │   ├── ingest.py               # Ingestion pipeline (PDFs → ChromaDB + BM25 corpus + parents.pkl)
 │   ├── evaluate_retrieval.py   # Offline local retrieval benchmarking (Hit Rate & MRR)
@@ -93,11 +98,14 @@ uvicorn backend.api:app --reload
 ```
 API runs at `http://localhost:8000`. Health check: `http://localhost:8000/health`.
 
-**Terminal 2 — Frontend (Streamlit):**
+**Terminal 2 — Frontend (Next.js 14+ Premium UI — Recommended):**
 ```bash
-streamlit run frontend/app.py
+cd frontend-next
+npm run dev
 ```
-App opens at `http://localhost:8501`.
+App opens at `http://localhost:3000`.
+
+*(Optional) Legacy Streamlit UI:* `streamlit run frontend/app.py` (Port 8501)
 
 ---
 
