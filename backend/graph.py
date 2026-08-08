@@ -1,0 +1,454 @@
+"""
+PitWall — LangGraph Agentic State Graph
+=========================================
+Orchestrates multi-source retrieval and strategy calculation via a
+LangGraph StateGraph.
+
+Nodes:
+  1. router_node       — Analyzes user intent, decides which tools to invoke
+  2. regulation_node   — Hybrid BM25+Vector search on FIA 2026 PDF regulations
+  3. telemetry_node    — SQLite queries on 2022-2025 F1 telemetry data
+  4. strategy_node     — Deterministic pit/tyre strategy calculator
+  5. synthesis_node    — Merges all tool outputs into a single LLM-generated answer
+
+Edges:
+  START → router_node → [regulation_node, telemetry_node, strategy_node] → synthesis_node → END
+"""
+
+from __future__ import annotations
+
+import os
+import asyncio
+import pickle
+from pathlib import Path
+from typing import Any, Annotated, TypedDict
+
+from dotenv import load_dotenv
+from langgraph.graph import StateGraph, END
+
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.documents import Document
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
+from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
+from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+
+from backend.tools import query_telemetry, calculate_strategy
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CHROMA_DIR = str(PROJECT_ROOT / "chroma_parent_child_db")
+PARENTS_PKL = PROJECT_ROOT / "parents.pkl"
+BM25_PKL = PROJECT_ROOT / "bm25_corpus.pkl"
+
+# Load .env from project root (not cwd)
+load_dotenv(PROJECT_ROOT / ".env")
+os.environ.pop("DATABASE_URL", None)
+
+
+# ---------------------------------------------------------------------------
+# State Definition
+# ---------------------------------------------------------------------------
+class PitWallState(TypedDict):
+    """Central state dictionary passed between LangGraph nodes."""
+    user_input: str
+    chat_history: list
+    # Router decisions
+    needs_regulations: bool
+    needs_telemetry: bool
+    needs_strategy: bool
+    # Tool outputs
+    regulation_context: str
+    telemetry_data: str
+    strategy_analysis: str
+    # Final output
+    final_response: str
+
+
+# ---------------------------------------------------------------------------
+# Build RAG Components (called once at startup)
+# ---------------------------------------------------------------------------
+def build_retriever():
+    """Build the hybrid BM25+Vector retriever with FlashRank reranking."""
+    print("[PitWall Graph] Loading embedding model...")
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"local_files_only": True},
+    )
+
+    print(f"[PitWall Graph] Loading Chroma from {CHROMA_DIR}...")
+    vectorstore = Chroma(
+        persist_directory=CHROMA_DIR,
+        embedding_function=embeddings,
+    )
+
+    print(f"[PitWall Graph] Loading BM25 corpus from {BM25_PKL}...")
+    with open(BM25_PKL, "rb") as f:
+        bm25_corpus = pickle.load(f)
+
+    vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
+
+    bm25_docs = [
+        Document(page_content=item["text"], metadata=item["metadata"])
+        for item in bm25_corpus
+    ]
+    bm25_retriever = BM25Retriever.from_documents(bm25_docs)
+    bm25_retriever.k = 6
+
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, vector_retriever],
+        weights=[0.4, 0.6],
+    )
+
+    compressor = FlashrankRerank(model="ms-marco-TinyBERT-L-2-v2", top_n=3)
+    reranked_retriever = ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=ensemble_retriever,
+    )
+
+    print("[PitWall Graph] Loading parent vault...")
+    with open(PARENTS_PKL, "rb") as f:
+        parent_vault = pickle.load(f)
+
+    return reranked_retriever, parent_vault
+
+
+def build_llm():
+    """Build the OpenRouter-connected LLM."""
+    return ChatOpenAI(
+        model=os.getenv("LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url=os.getenv("OPENROUTER_ENDPOINT"),
+        temperature=0,
+        streaming=True,
+        max_tokens=2048,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Node Functions
+# ---------------------------------------------------------------------------
+def make_router_node(llm: ChatOpenAI):
+    """Create the router node that classifies user intent."""
+
+    router_prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You are a query classifier for PitWall, an F1 regulations and race strategy assistant.\n"
+            "Analyze the user's question and determine which data sources are needed.\n\n"
+            "Respond with EXACTLY one line containing three comma-separated boolean values:\n"
+            "needs_regulations, needs_telemetry, needs_strategy\n\n"
+            "Rules:\n"
+            "- needs_regulations = true if the question involves FIA rules, regulations, legal compliance, "
+            "Parc Fermé, scrutineering, or any technical/sporting/financial regulation.\n"
+            "- needs_telemetry = true if the question involves historical race data, pit stop times, "
+            "tyre degradation, circuit-specific performance, or lap times.\n"
+            "- needs_strategy = true if the question involves pit stop strategy decisions, stint projections, "
+            "tyre choice optimization, or race time calculations.\n\n"
+            "Examples:\n"
+            "Q: 'What is the minimum car weight?' → true, false, false\n"
+            "Q: 'What is the average pit stop time at Monza?' → false, true, false\n"
+            "Q: 'Should I pit under safety car at Silverstone on lap 30?' → true, true, true\n"
+            "Q: 'Can I replace a front wing under Parc Fermé and what is my pit loss?' → true, true, true\n"
+            "Q: 'Compare tyre degradation for soft vs medium at Spa' → false, true, false\n"
+        )),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+
+    def router_node(state: PitWallState) -> dict:
+        """Classify user intent and set routing flags."""
+        response = llm.invoke(
+            router_prompt.format_messages(
+                input=state["user_input"],
+                chat_history=state.get("chat_history", []),
+            )
+        )
+        text = response.content.strip().lower()
+
+        # Parse the three boolean values
+        parts = [p.strip() for p in text.split(",")]
+        needs_reg = "true" in parts[0] if len(parts) > 0 else True
+        needs_tel = "true" in parts[1] if len(parts) > 1 else False
+        needs_str = "true" in parts[2] if len(parts) > 2 else False
+
+        # Fallback: if nothing is detected, default to regulations
+        if not needs_reg and not needs_tel and not needs_str:
+            needs_reg = True
+
+        return {
+            "needs_regulations": needs_reg,
+            "needs_telemetry": needs_tel,
+            "needs_strategy": needs_str,
+        }
+
+    return router_node
+
+
+def make_regulation_node(retriever, parent_vault: dict):
+    """Create the regulation retrieval node."""
+
+    def fetch_parent_context(child_docs: list[Document]) -> str:
+        """Resolve child chunks → full parent regulation text."""
+        seen_parents = set()
+        formatted = []
+        for doc in child_docs:
+            parent_id = doc.metadata.get("parent_id")
+            if parent_id and parent_id not in seen_parents:
+                seen_parents.add(parent_id)
+                entry = parent_vault.get(parent_id)
+                if isinstance(entry, dict):
+                    text = entry.get("text", doc.page_content)
+                else:
+                    text = entry or doc.page_content
+                formatted.append(text)
+        return "\n\n---\n\n".join(formatted) if formatted else ""
+
+    def regulation_node(state: PitWallState) -> dict:
+        """Retrieve FIA 2026 regulation context via hybrid search."""
+        if not state.get("needs_regulations", False):
+            return {"regulation_context": ""}
+
+        # Run retrieval in a thread to not block event loop
+        child_docs = retriever.invoke(state["user_input"])
+        context = fetch_parent_context(child_docs)
+        return {"regulation_context": context}
+
+    return regulation_node
+
+
+def make_telemetry_node():
+    """Create the telemetry database query node."""
+
+    def telemetry_node(state: PitWallState) -> dict:
+        """Query 2022-2025 telemetry data from SQLite."""
+        if not state.get("needs_telemetry", False):
+            return {"telemetry_data": ""}
+
+        # Use the LLM-friendly tool interface — pass the user's question
+        # and let the tool extract circuit names via pattern matching
+        user_input = state["user_input"].lower()
+
+        # Simple circuit name extraction from the user query
+        from backend.tools import _query_db
+        circuits = _query_db("SELECT DISTINCT circuit_name FROM circuit_summaries")
+        circuit_names = [c["circuit_name"] for c in circuits]
+
+        matched_circuit = None
+        for name in circuit_names:
+            if name.lower() in user_input:
+                matched_circuit = name
+                break
+
+        if not matched_circuit:
+            # Try partial matching
+            for name in circuit_names:
+                for word in name.lower().split():
+                    if len(word) > 3 and word in user_input:
+                        matched_circuit = name
+                        break
+                if matched_circuit:
+                    break
+
+        if not matched_circuit:
+            return {"telemetry_data": "No specific circuit identified in the query. Available circuits can be listed with the telemetry tool."}
+
+        # Get circuit summary
+        summary = query_telemetry.invoke({
+            "circuit_name": matched_circuit,
+            "query_type": "summary",
+        })
+
+        return {"telemetry_data": summary}
+
+    return telemetry_node
+
+
+def make_strategy_node():
+    """Create the strategy calculator node."""
+
+    def strategy_node(state: PitWallState) -> dict:
+        """Run pit/tyre strategy calculations."""
+        if not state.get("needs_strategy", False):
+            return {"strategy_analysis": ""}
+
+        user_input = state["user_input"].lower()
+
+        # Extract circuit name
+        from backend.tools import _query_db
+        circuits = _query_db("SELECT DISTINCT circuit_name FROM circuit_summaries")
+        circuit_names = [c["circuit_name"] for c in circuits]
+
+        matched_circuit = None
+        for name in circuit_names:
+            if name.lower() in user_input:
+                matched_circuit = name
+                break
+        if not matched_circuit:
+            for name in circuit_names:
+                for word in name.lower().split():
+                    if len(word) > 3 and word in user_input:
+                        matched_circuit = name
+                        break
+                if matched_circuit:
+                    break
+
+        if not matched_circuit:
+            return {"strategy_analysis": "Could not identify a specific circuit for strategy calculation."}
+
+        # Extract lap numbers from query (simple regex-free parsing)
+        import re
+        lap_matches = re.findall(r"lap\s*(\d+)", user_input)
+        total_matches = re.findall(r"(\d+)\s*(?:total\s*)?laps", user_input)
+
+        current_lap = int(lap_matches[0]) if lap_matches else 25
+        total_laps = int(total_matches[0]) if total_matches else 55
+
+        # Detect flag condition
+        if "safety car" in user_input or "sc " in user_input:
+            flag = "safety_car"
+        elif "vsc" in user_input or "virtual" in user_input:
+            flag = "vsc"
+        else:
+            flag = "green"
+
+        # Detect compound
+        if "soft" in user_input:
+            compound = "SOFT"
+        elif "hard" in user_input:
+            compound = "HARD"
+        else:
+            compound = "MEDIUM"
+
+        result = calculate_strategy.invoke({
+            "circuit_name": matched_circuit,
+            "current_lap": current_lap,
+            "total_laps": total_laps,
+            "flag_condition": flag,
+            "target_compound": compound,
+        })
+
+        return {"strategy_analysis": result}
+
+    return strategy_node
+
+
+def make_synthesis_node(llm: ChatOpenAI):
+    """Create the synthesis node that merges all tool outputs."""
+
+    synthesis_prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You are PitWall, an expert F1 Race Strategy and Regulations Consultant.\n"
+            "You have access to multiple data sources and must synthesize them into a "
+            "clear, actionable response.\n\n"
+            "AVAILABLE CONTEXT (use only what is provided, do not fabricate data):\n\n"
+            "{context_block}\n\n"
+            "INSTRUCTIONS:\n"
+            "- If regulation context is provided, cite specific FIA articles and sections.\n"
+            "- If telemetry data is provided, reference the exact numbers.\n"
+            "- If strategy analysis is provided, integrate the pit loss and stint projections.\n"
+            "- Structure your response with clear sections when multiple data sources are used.\n"
+            "- If you cannot answer from the provided context, explicitly say so.\n"
+            "- Be concise but thorough. Use a professional race engineer tone."
+        )),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+
+    def synthesis_node(state: PitWallState) -> dict:
+        """Merge all tool outputs and generate final response."""
+        # Build context block from available tool outputs
+        context_parts = []
+
+        if state.get("regulation_context"):
+            context_parts.append(
+                "═══ FIA 2026 REGULATION CONTEXT ═══\n" + state["regulation_context"]
+            )
+        if state.get("telemetry_data"):
+            context_parts.append(
+                "═══ TELEMETRY DATA (2022-2025) ═══\n" + state["telemetry_data"]
+            )
+        if state.get("strategy_analysis"):
+            context_parts.append(
+                "═══ STRATEGY ANALYSIS ═══\n" + state["strategy_analysis"]
+            )
+
+        if not context_parts:
+            context_block = "No specific data retrieved. Answer based on general F1 knowledge."
+        else:
+            context_block = "\n\n".join(context_parts)
+
+        # Generate response
+        response = llm.invoke(
+            synthesis_prompt.format_messages(
+                context_block=context_block,
+                input=state["user_input"],
+                chat_history=state.get("chat_history", []),
+            )
+        )
+
+        return {"final_response": response.content}
+
+    return synthesis_node
+
+
+# ---------------------------------------------------------------------------
+# Graph Builder
+# ---------------------------------------------------------------------------
+def build_pitwall_graph():
+    """
+    Construct and compile the full PitWall LangGraph StateGraph.
+
+    Returns:
+        compiled_graph: The compiled LangGraph ready for .invoke() or .astream()
+    """
+    print("[PitWall Graph] Building LangGraph StateGraph...")
+
+    # Build components
+    retriever, parent_vault = build_retriever()
+    llm = build_llm()
+
+    # Create nodes
+    router = make_router_node(llm)
+    regulation = make_regulation_node(retriever, parent_vault)
+    telemetry = make_telemetry_node()
+    strategy = make_strategy_node()
+    synthesis = make_synthesis_node(llm)
+
+    # Define graph
+    graph = StateGraph(PitWallState)
+
+    # Add nodes
+    graph.add_node("router", router)
+    graph.add_node("regulation_retriever", regulation)
+    graph.add_node("telemetry_sql", telemetry)
+    graph.add_node("strategy_calculator", strategy)
+    graph.add_node("synthesis", synthesis)
+
+    # Define edges
+    graph.set_entry_point("router")
+
+    # After router, always run all three tool nodes
+    # (each node internally checks its flag and short-circuits if not needed)
+    graph.add_edge("router", "regulation_retriever")
+    graph.add_edge("router", "telemetry_sql")
+    graph.add_edge("router", "strategy_calculator")
+
+    # All tool nodes feed into synthesis
+    graph.add_edge("regulation_retriever", "synthesis")
+    graph.add_edge("telemetry_sql", "synthesis")
+    graph.add_edge("strategy_calculator", "synthesis")
+
+    # Synthesis is the final node
+    graph.add_edge("synthesis", END)
+
+    # Compile
+    compiled = graph.compile()
+    print("[PitWall Graph] LangGraph compiled successfully.\n")
+
+    return compiled
