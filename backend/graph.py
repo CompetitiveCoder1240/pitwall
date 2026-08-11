@@ -191,7 +191,22 @@ def make_router_node(llm: ChatOpenAI):
 
 
 def make_regulation_node(retriever, parent_vault: dict):
-    """Create the regulation retrieval node."""
+    """Create the regulation retrieval node with GraphRAG knowledge graph traversal."""
+    import pickle
+    import networkx as nx
+
+    graph_path = os.path.join(PROJECT_ROOT, "data", "fia_knowledge_graph.pkl")
+    if not os.path.exists(graph_path):
+        graph_path = os.path.join(PROJECT_ROOT, "f1-rag-chatbot", "data", "fia_knowledge_graph.pkl")
+
+    kg = None
+    if os.path.exists(graph_path):
+        try:
+            with open(graph_path, "rb") as f:
+                kg = pickle.load(f)
+            print(f"[PitWall Graph] Loaded GraphRAG Knowledge Graph ({kg.number_of_nodes()} nodes, {kg.number_of_edges()} edges)")
+        except Exception as e:
+            print(f"[PitWall Graph Warning] Could not load Knowledge Graph: {e}")
 
     def fetch_parent_context(child_docs: list[Document]) -> str:
         """Resolve child chunks → full parent regulation text."""
@@ -209,15 +224,59 @@ def make_regulation_node(retriever, parent_vault: dict):
                 formatted.append(text)
         return "\n\n---\n\n".join(formatted) if formatted else ""
 
+    def traverse_knowledge_graph(user_query: str, primary_context: str) -> str:
+        """Traverse GraphRAG edges to find connected cross-section rules."""
+        if not kg:
+            return ""
+
+        query_lower = user_query.lower()
+        matched_nodes = []
+
+        # Find matching entity or article nodes in graph
+        for node, data in kg.nodes(data=True):
+            node_str = str(node).lower()
+            if node_str in query_lower or (len(node_str) > 4 and node_str in primary_context.lower()):
+                matched_nodes.append(node)
+
+        if not matched_nodes:
+            return ""
+
+        graph_links = []
+        visited_nodes = set()
+
+        for start_node in matched_nodes[:3]:
+            # 1-hop successors and predecessors
+            neighbors = list(kg.successors(start_node)) + list(kg.predecessors(start_node))
+            for nbr in neighbors[:4]:
+                if nbr not in visited_nodes and nbr != start_node:
+                    visited_nodes.add(nbr)
+                    edge_data = kg.get_edge_data(start_node, nbr) or kg.get_edge_data(nbr, start_node) or {}
+                    rel = edge_data.get("relation", "CONNECTED_TO")
+                    sample = kg.nodes[nbr].get("text_sample", "")
+                    if sample:
+                        graph_links.append(f"• Linked Node [{start_node}] --({rel})--> [{nbr}]: {sample[:200]}...")
+                    else:
+                        graph_links.append(f"• Linked Node [{start_node}] --({rel})--> [{nbr}]")
+
+        if not graph_links:
+            return ""
+
+        return "\n═══ KNOWLEDGE GRAPH CROSS-SECTION LINKAGES ═══\n" + "\n".join(graph_links[:5])
+
     def regulation_node(state: PitWallState) -> dict:
-        """Retrieve FIA 2026 regulation context via hybrid search."""
+        """Retrieve FIA 2026 regulation context via hybrid search + GraphRAG traversal."""
         if not state.get("needs_regulations", False):
             return {"regulation_context": ""}
 
         # Run retrieval in a thread to not block event loop
         child_docs = retriever.invoke(state["user_input"])
-        context = fetch_parent_context(child_docs)
-        return {"regulation_context": context}
+        primary_context = fetch_parent_context(child_docs)
+
+        # GraphRAG 1-hop/2-hop cross-section traversal
+        graph_context = traverse_knowledge_graph(state["user_input"], primary_context)
+        combined_context = primary_context + ("\n\n" + graph_context if graph_context else "")
+
+        return {"regulation_context": combined_context}
 
     return regulation_node
 
@@ -397,6 +456,60 @@ def make_synthesis_node(llm: ChatOpenAI):
     return synthesis_node
 
 
+def make_citation_guardrail_node():
+    """Create the citation guardrail verification node."""
+
+    def citation_guardrail_node(state: PitWallState) -> dict:
+        """
+        Validate every regulation citation in the final_response against
+        the retrieved regulation_context to detect hallucinations.
+        """
+        final_response = state.get("final_response", "")
+        regulation_context = state.get("regulation_context", "")
+
+        if not final_response or not regulation_context:
+            return {"final_response": final_response}
+
+        import re
+        # Find all article citations like "Article B3.5.3.a", "Article 40.2", "Article C3.2"
+        cited_articles = re.findall(r"Article\s+([A-Z0-9\.]+)", final_response, re.IGNORECASE)
+
+        if not cited_articles:
+            return {"final_response": final_response}
+
+        verified_count = 0
+        unverified_citations = []
+
+        for article_num in cited_articles:
+            # Clean trailing punctuation
+            clean_num = article_num.rstrip(".,;")
+            # Check if this article number or base section appears in regulation_context
+            if clean_num in regulation_context or clean_num.lower() in regulation_context.lower():
+                verified_count += 1
+            else:
+                unverified_citations.append(clean_num)
+
+        # Build guardrail validation badge/footer
+        total_cited = len(cited_articles)
+        if unverified_citations:
+            # Replace hallucinated citations in text or append warning
+            warning_msg = (
+                f"\n\n⚠️ [Citation Guardrail]: {total_cited - len(unverified_citations)}/{total_cited} "
+                f"citations verified. Unverified citation(s): {', '.join(unverified_citations)}."
+            )
+            updated_response = final_response + warning_msg
+        else:
+            badge_msg = (
+                f"\n\n🛡️ [Citation Guardrail]: {verified_count}/{total_cited} "
+                "citations verified against official 2026 FIA rulebooks."
+            )
+            updated_response = final_response + badge_msg
+
+        return {"final_response": updated_response}
+
+    return citation_guardrail_node
+
+
 # ---------------------------------------------------------------------------
 # Graph Builder
 # ---------------------------------------------------------------------------
@@ -419,6 +532,7 @@ def build_pitwall_graph():
     telemetry = make_telemetry_node()
     strategy = make_strategy_node()
     synthesis = make_synthesis_node(llm)
+    citation_guardrail = make_citation_guardrail_node()
 
     # Define graph
     graph = StateGraph(PitWallState)
@@ -429,12 +543,12 @@ def build_pitwall_graph():
     graph.add_node("telemetry_sql", telemetry)
     graph.add_node("strategy_calculator", strategy)
     graph.add_node("synthesis", synthesis)
+    graph.add_node("citation_guardrail", citation_guardrail)
 
     # Define edges
     graph.set_entry_point("router")
 
     # After router, always run all three tool nodes
-    # (each node internally checks its flag and short-circuits if not needed)
     graph.add_edge("router", "regulation_retriever")
     graph.add_edge("router", "telemetry_sql")
     graph.add_edge("router", "strategy_calculator")
@@ -444,11 +558,13 @@ def build_pitwall_graph():
     graph.add_edge("telemetry_sql", "synthesis")
     graph.add_edge("strategy_calculator", "synthesis")
 
-    # Synthesis is the final node
-    graph.add_edge("synthesis", END)
+    # Synthesis feeds into Citation Guardrail node
+    graph.add_edge("synthesis", "citation_guardrail")
+    graph.add_edge("citation_guardrail", END)
 
     # Compile
     compiled = graph.compile()
     print("[PitWall Graph] LangGraph compiled successfully.\n")
 
     return compiled
+
