@@ -13,6 +13,8 @@ from typing import Optional
 
 from langchain_core.tools import tool
 
+from backend.logger import logger
+
 # ---------------------------------------------------------------------------
 # Database path — resolved relative to project root
 # ---------------------------------------------------------------------------
@@ -22,13 +24,18 @@ DB_PATH = PROJECT_ROOT / "data" / "pitwall_telemetry.db"
 
 def _query_db(sql: str, params: tuple = ()) -> list[dict]:
     """Execute a read-only SQL query and return results as list of dicts."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute(sql, params)
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    try:
+        logger.debug(f"SQL Query: {sql[:200]}")
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+    except Exception as e:
+        logger.error(f"Database query failed: {e}", exc_info=True)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +64,8 @@ def query_telemetry(
     Returns:
         Formatted string with the query results.
     """
+    logger.info(f"Telemetry query: type={query_type}, circuit={circuit_name}")
+
     if query_type == "all_circuits":
         rows = _query_db(
             "SELECT circuit_name, total_races_sampled, avg_pit_duration, "
@@ -64,6 +73,7 @@ def query_telemetry(
             "FROM circuit_summaries ORDER BY circuit_name"
         )
         if not rows:
+            logger.warning(f"No {query_type} data found for circuit: {circuit_name}")
             return "No circuit data found in the telemetry database."
         lines = ["Available circuits (2022-2025):\n"]
         for r in rows:
@@ -79,6 +89,7 @@ def query_telemetry(
             (f"%{circuit_name}%",),
         )
         if not rows:
+            logger.warning(f"No {query_type} data found for circuit: {circuit_name}")
             return f"No summary data found for circuit matching '{circuit_name}'."
         r = rows[0]
         result = (
@@ -110,6 +121,7 @@ def query_telemetry(
         sql += " ORDER BY c.season, p.lap_number LIMIT 50"
         rows = _query_db(sql, tuple(params))
         if not rows:
+            logger.warning(f"No {query_type} data found for circuit: {circuit_name}")
             return f"No pit stop data found for circuit matching '{circuit_name}'."
         lines = [f"Pit stops at {circuit_name} (showing up to 50):\n"]
         for r in rows:
@@ -138,6 +150,7 @@ def query_telemetry(
         sql += " ORDER BY c.season, t.driver, t.stint_number LIMIT 50"
         rows = _query_db(sql, tuple(params))
         if not rows:
+            logger.warning(f"No {query_type} data found for circuit: {circuit_name}")
             return f"No tyre stint data found for circuit matching '{circuit_name}'."
         lines = [f"Tyre stints at {circuit_name} (showing up to 50):\n"]
         for r in rows:
@@ -150,6 +163,7 @@ def query_telemetry(
             )
         return "\n".join(lines)
 
+    logger.warning(f"Unknown query_type: {query_type}")
     return f"Unknown query_type '{query_type}'. Use: summary, pit_stops, tyre_stints, or all_circuits."
 
 
@@ -184,6 +198,8 @@ def calculate_strategy(
     Returns:
         Formatted strategy analysis with pit loss, stint projection, and recommendation.
     """
+    logger.info(f"Strategy calculation: circuit={circuit_name}, lap={current_lap}/{total_laps}, flag={flag_condition}, compound={target_compound}")
+
     remaining_laps = total_laps - current_lap
     if remaining_laps <= 0:
         return "Race is already complete — no strategy calculation needed."
@@ -195,6 +211,7 @@ def calculate_strategy(
     )
 
     if not summaries:
+        logger.warning(f"No telemetry data for circuit: {circuit_name}")
         return f"No telemetry data found for circuit matching '{circuit_name}'."
 
     summary = summaries[0]
@@ -221,6 +238,7 @@ def calculate_strategy(
     deg_key = f"avg_{compound_upper.lower()}_deg_per_lap"
     deg_per_lap = summary.get(deg_key)
     if deg_per_lap is None:
+        logger.warning(f"No {compound_upper} degradation data for {circuit_name}, using fallback 0.05")
         deg_per_lap = 0.05  # Default fallback
 
     # --- Base lap time ---
@@ -235,6 +253,7 @@ def calculate_strategy(
         if avg_rows and avg_rows[0]["avg_time"]:
             base_lap_time = avg_rows[0]["avg_time"]
         else:
+            logger.warning(f"No avg lap time for {circuit_name}/{compound_upper}, using fallback 90.0s")
             base_lap_time = 90.0  # Default fallback
 
     # --- Stint projection ---

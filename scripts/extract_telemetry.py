@@ -43,7 +43,7 @@ fastf1.Cache.enable_cache(str(CACHE_DIR))
 # ---------------------------------------------------------------------------
 # Seasons & calendar
 # ---------------------------------------------------------------------------
-SEASONS = [2022, 2023, 2024, 2025]
+SEASONS = [2022, 2023, 2024, 2025, 2026]
 
 # Pirelli compound naming: C1 (hardest) to C5 (softest)
 # FastF1 uses simplified names: HARD, MEDIUM, SOFT
@@ -126,7 +126,7 @@ def create_database(conn: sqlite3.Connection):
     print("[DB] Schema created successfully.")
 
 
-def extract_race_data(season: int, conn: sqlite3.Connection):
+def extract_race_data(season: int, conn: sqlite3.Connection, start_round: int = 1):
     """Extract pit stops, tyre stints, and SC data for all races in a season."""
     cursor = conn.cursor()
 
@@ -150,8 +150,8 @@ def extract_race_data(season: int, conn: sqlite3.Connection):
         print(f"  [ERROR] Failed to load {season} schedule after 3 retries.")
         return
 
-    # Filter to only conventional race rounds (round > 0)
-    races = schedule[schedule["RoundNumber"] > 0]
+    # Filter to only conventional race rounds (round >= start_round)
+    races = schedule[schedule["RoundNumber"] >= start_round]
 
     for _, event in races.iterrows():
         round_num = int(event["RoundNumber"])

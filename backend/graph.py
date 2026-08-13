@@ -23,10 +23,11 @@ import pickle
 from pathlib import Path
 from typing import Any, Annotated, TypedDict
 
+from backend.logger import logger
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.documents import Document
@@ -76,19 +77,22 @@ class PitWallState(TypedDict):
 # ---------------------------------------------------------------------------
 def build_retriever():
     """Build the hybrid BM25+Vector retriever with FlashRank reranking."""
-    print("[PitWall Graph] Loading embedding model...")
+    from chromadb.config import Settings
+
+    logger.info("Loading embedding model...")
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={"local_files_only": True},
     )
 
-    print(f"[PitWall Graph] Loading Chroma from {CHROMA_DIR}...")
+    logger.info(f"Loading Chroma from {CHROMA_DIR}...")
     vectorstore = Chroma(
         persist_directory=CHROMA_DIR,
         embedding_function=embeddings,
+        client_settings=Settings(anonymized_telemetry=False, is_persistent=True),
     )
 
-    print(f"[PitWall Graph] Loading BM25 corpus from {BM25_PKL}...")
+    logger.info(f"Loading BM25 corpus from {BM25_PKL}...")
     with open(BM25_PKL, "rb") as f:
         bm25_corpus = pickle.load(f)
 
@@ -112,41 +116,55 @@ def build_retriever():
         base_retriever=ensemble_retriever,
     )
 
-    print("[PitWall Graph] Loading parent vault...")
+    logger.info("Loading parent vault...")
     with open(PARENTS_PKL, "rb") as f:
         parent_vault = pickle.load(f)
 
-    return reranked_retriever, parent_vault
+    return reranked_retriever, parent_vault, bm25_retriever
+
+
+def _extract_text(content) -> str:
+    """Safely extract text from an LLM response content field.
+    
+    Gemini models may return content as a list of parts instead of a plain string.
+    This helper normalises both formats into a single string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part if isinstance(part, str) else part.get("text", str(part))
+            for part in content
+        )
+    return str(content)
 
 
 def build_llm():
-    """Build the OpenRouter-connected LLM."""
-    return ChatOpenAI(
-        model=os.getenv("LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"),
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        base_url=os.getenv("OPENROUTER_ENDPOINT"),
+    """Build the Gemini-connected LLM via Google AI Studio."""
+    return ChatGoogleGenerativeAI(
+        model=os.getenv("LLM_MODEL", "gemini-3.5-flash"),
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
         temperature=0,
-        streaming=True,
-        max_tokens=2048,
+        max_output_tokens=2048,
     )
 
 
 # ---------------------------------------------------------------------------
 # Node Functions
 # ---------------------------------------------------------------------------
-def make_router_node(llm: ChatOpenAI):
+def make_router_node(llm):
     """Create the router node that classifies user intent."""
 
     router_prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            "You are a query classifier for PitWall, an F1 regulations and race strategy assistant.\n"
-            "Analyze the user's question and determine which data sources are needed.\n\n"
-            "Respond with EXACTLY one line containing three comma-separated boolean values:\n"
+            "You are an expert F1 intent classifier for PitWall.\n"
+            "Analyze the user's input and determine which data sources are needed.\n"
+            "Return EXACTLY three comma-separated boolean values (true/false) for:\n"
             "needs_regulations, needs_telemetry, needs_strategy\n\n"
             "Rules:\n"
-            "- needs_regulations = true if the question involves FIA rules, regulations, legal compliance, "
-            "Parc Fermé, scrutineering, or any technical/sporting/financial regulation.\n"
-            "- needs_telemetry = true if the question involves historical race data, pit stop times, "
+            "- needs_regulations = true if the question asks about FIA rules, technical/sporting/financial "
+            "specifications, wing dimensions, weight limits, parc fermé, penalties, cost cap, or regulations.\n"
+            "- needs_telemetry = true if the question asks about past F1 race data (2022-2025), pit stop durations, "
             "tyre degradation, circuit-specific performance, or lap times.\n"
             "- needs_strategy = true if the question involves pit stop strategy decisions, stint projections, "
             "tyre choice optimization, or race time calculations.\n\n"
@@ -163,23 +181,31 @@ def make_router_node(llm: ChatOpenAI):
 
     def router_node(state: PitWallState) -> dict:
         """Classify user intent and set routing flags."""
-        response = llm.invoke(
-            router_prompt.format_messages(
-                input=state["user_input"],
-                chat_history=state.get("chat_history", []),
+        try:
+            response = llm.invoke(
+                router_prompt.format_messages(
+                    input=state["user_input"],
+                    chat_history=state.get("chat_history", []),
+                )
             )
-        )
-        text = response.content.strip().lower()
+            text = _extract_text(response.content).strip().lower()
 
-        # Parse the three boolean values
-        parts = [p.strip() for p in text.split(",")]
-        needs_reg = "true" in parts[0] if len(parts) > 0 else True
-        needs_tel = "true" in parts[1] if len(parts) > 1 else False
-        needs_str = "true" in parts[2] if len(parts) > 2 else False
+            # Parse the three boolean values
+            parts = [p.strip() for p in text.split(",")]
+            needs_reg = "true" in parts[0] if len(parts) > 0 else True
+            needs_tel = "true" in parts[1] if len(parts) > 1 else False
+            needs_str = "true" in parts[2] if len(parts) > 2 else False
 
-        # Fallback: if nothing is detected, default to regulations
-        if not needs_reg and not needs_tel and not needs_str:
+            # Fallback: if nothing is detected, default to regulations
+            if not needs_reg and not needs_tel and not needs_str:
+                needs_reg = True
+        except Exception as e:
+            logger.error(f"Router LLM call failed: {e}", exc_info=True)
             needs_reg = True
+            needs_tel = False
+            needs_str = False
+
+        logger.info(f"Router Decision -> Regulations: {needs_reg} | Telemetry: {needs_tel} | Strategy: {needs_str}")
 
         return {
             "needs_regulations": needs_reg,
@@ -190,8 +216,8 @@ def make_router_node(llm: ChatOpenAI):
     return router_node
 
 
-def make_regulation_node(retriever, parent_vault: dict):
-    """Create the regulation retrieval node with GraphRAG knowledge graph traversal."""
+def make_regulation_node(retriever, parent_vault: dict, bm25_fallback_retriever=None):
+    """Create the regulation retrieval node with GraphRAG knowledge graph traversal and fail-safe fallback."""
     import pickle
     import networkx as nx
 
@@ -204,9 +230,9 @@ def make_regulation_node(retriever, parent_vault: dict):
         try:
             with open(graph_path, "rb") as f:
                 kg = pickle.load(f)
-            print(f"[PitWall Graph] Loaded GraphRAG Knowledge Graph ({kg.number_of_nodes()} nodes, {kg.number_of_edges()} edges)")
+            logger.info(f"Loaded GraphRAG Knowledge Graph ({kg.number_of_nodes()} nodes, {kg.number_of_edges()} edges)")
         except Exception as e:
-            print(f"[PitWall Graph Warning] Could not load Knowledge Graph: {e}")
+            logger.warning(f"Could not load Knowledge Graph: {e}")
 
     def fetch_parent_context(child_docs: list[Document]) -> str:
         """Resolve child chunks → full parent regulation text."""
@@ -268,13 +294,28 @@ def make_regulation_node(retriever, parent_vault: dict):
         if not state.get("needs_regulations", False):
             return {"regulation_context": ""}
 
-        # Run retrieval in a thread to not block event loop
-        child_docs = retriever.invoke(state["user_input"])
+        logger.info("Executing Regulation Node (Hybrid Search)...")
+
+        # Fail-safe retrieval execution
+        child_docs = []
+        try:
+            child_docs = retriever.invoke(state["user_input"])
+        except Exception as e:
+            logger.warning(f"Hybrid retrieval error ({e}). Falling back to BM25 search.")
+            if bm25_fallback_retriever:
+                try:
+                    child_docs = bm25_fallback_retriever.invoke(state["user_input"])
+                except Exception as e2:
+                    logger.error(f"BM25 fallback error ({e2})")
+                    child_docs = []
+
         primary_context = fetch_parent_context(child_docs)
 
         # GraphRAG 1-hop/2-hop cross-section traversal
         graph_context = traverse_knowledge_graph(state["user_input"], primary_context)
         combined_context = primary_context + ("\n\n" + graph_context if graph_context else "")
+
+        logger.info(f"Regulation Node retrieved {len(child_docs)} chunks, context length: {len(combined_context)}")
 
         return {"regulation_context": combined_context}
 
@@ -288,6 +329,8 @@ def make_telemetry_node():
         """Query 2022-2025 telemetry data from SQLite."""
         if not state.get("needs_telemetry", False):
             return {"telemetry_data": ""}
+
+        logger.info("Executing Telemetry Node...")
 
         # Use the LLM-friendly tool interface — pass the user's question
         # and let the tool extract circuit names via pattern matching
@@ -323,7 +366,10 @@ def make_telemetry_node():
             "query_type": "summary",
         })
 
-        return {"telemetry_data": summary}
+        result = summary
+        logger.info(f"Telemetry Node result length: {len(result)}")
+
+        return {"telemetry_data": result}
 
     return telemetry_node
 
@@ -335,6 +381,8 @@ def make_strategy_node():
         """Run pit/tyre strategy calculations."""
         if not state.get("needs_strategy", False):
             return {"strategy_analysis": ""}
+
+        logger.info("Executing Strategy Node...")
 
         user_input = state["user_input"].lower()
 
@@ -392,12 +440,14 @@ def make_strategy_node():
             "target_compound": compound,
         })
 
+        logger.info(f"Strategy Node result length: {len(result)}")
+
         return {"strategy_analysis": result}
 
     return strategy_node
 
 
-def make_synthesis_node(llm: ChatOpenAI):
+def make_synthesis_node(llm):
     """Create the synthesis node that merges all tool outputs."""
 
     synthesis_prompt = ChatPromptTemplate.from_messages([
@@ -443,15 +493,21 @@ def make_synthesis_node(llm: ChatOpenAI):
             context_block = "\n\n".join(context_parts)
 
         # Generate response
-        response = llm.invoke(
-            synthesis_prompt.format_messages(
-                context_block=context_block,
-                input=state["user_input"],
-                chat_history=state.get("chat_history", []),
+        logger.info("Executing Synthesis Node...")
+        try:
+            response = llm.invoke(
+                synthesis_prompt.format_messages(
+                    context_block=context_block,
+                    input=state["user_input"],
+                    chat_history=state.get("chat_history", []),
+                )
             )
-        )
+            final_response = _extract_text(response.content)
+        except Exception as e:
+            logger.error(f"Synthesis LLM call failed: {e}", exc_info=True)
+            final_response = "I'm sorry, an error occurred while generating your response. Please try again."
 
-        return {"final_response": response.content}
+        return {"final_response": final_response}
 
     return synthesis_node
 
@@ -505,6 +561,8 @@ def make_citation_guardrail_node():
             )
             updated_response = final_response + badge_msg
 
+        logger.info(f"Citation Guardrail: {verified_count}/{total_cited} citations verified")
+
         return {"final_response": updated_response}
 
     return citation_guardrail_node
@@ -520,15 +578,15 @@ def build_pitwall_graph():
     Returns:
         compiled_graph: The compiled LangGraph ready for .invoke() or .astream()
     """
-    print("[PitWall Graph] Building LangGraph StateGraph...")
+    logger.info("Building LangGraph StateGraph...")
 
     # Build components
-    retriever, parent_vault = build_retriever()
+    retriever, parent_vault, bm25_retriever = build_retriever()
     llm = build_llm()
 
     # Create nodes
     router = make_router_node(llm)
-    regulation = make_regulation_node(retriever, parent_vault)
+    regulation = make_regulation_node(retriever, parent_vault, bm25_retriever)
     telemetry = make_telemetry_node()
     strategy = make_strategy_node()
     synthesis = make_synthesis_node(llm)
@@ -564,7 +622,7 @@ def build_pitwall_graph():
 
     # Compile
     compiled = graph.compile()
-    print("[PitWall Graph] LangGraph compiled successfully.\n")
+    logger.info("LangGraph compiled successfully.")
 
     return compiled
 

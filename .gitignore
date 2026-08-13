@@ -65,11 +65,12 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 
-# ── Logs & temp ───────────────────────────────────────────────────────────
+# ── Logs, cache & temp ───────────────────────────────────────────────────────────
 *.log
 *.tmp
 *.bak
 *.swp
+fastf1_cache/
 
 # ── HuggingFace model cache (large, downloaded automatically) ─────────────
 .cache/

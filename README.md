@@ -1,19 +1,57 @@
-# 🏎️ PitWall — F1 2026 Regulations RAG Chatbot (v2)
+# 🏎️ PitWall — F1 Race Strategy & Regulations Agentic AI (v3)
 
-> **PitWall** is an AI-powered technical consultant that lets you query the full FIA 2026 Formula 1 Regulations (all six sections, ~8,000 pages combined) using natural language. Built with a production-grade **Parent-Child RAG pipeline**, **Hybrid Search (BM25 + Vector)**, **cross-encoder reranking**, and a streaming non-blocking FastAPI backend.
+> **PitWall** is an AI-powered F1 Race Strategy & Regulations Consultant that synthesizes **FIA 2026 Regulation PDFs**, **2022–2025 F1 Telemetry Data (92 Races)**, and **Deterministic Strategy Calculators** into real-time, verified engineering insights. Powered by **LangGraph StateGraph**, **GraphRAG Knowledge Graphs**, **Parent-Child Hybrid RAG**, and **Citation Guardrails**.
 
 ---
 
-## ✨ Features (v2 Updates)
+## ✨ Architecture Highlights (v3 Upgrades)
 
-- **Parent-Child Chunking (v2)** — 300-character micro child snippets mapped to 3,000-character structural parent articles.
-- **Section-Aware Metadata** — Automatic tag extraction for Sections A through F (`General`, `Sporting`, `Technical`, `Financial Teams`, `Financial PU`, `Operational`).
-- **Hybrid Search (Sparse + Dense)** — Combines BM25 keyword matching (40%) with ChromaDB dense vector search (60%) via `EnsembleRetriever` ($k=6$).
-- **Two-Stage Reranking** — FlashRank cross-encoder (`ms-marco-TinyBERT-L-2-v2`) reranks ensemble candidates to select top parent articles.
-- **Non-Blocking Async Backend** — Offloads retrieval & reranking to a background thread pool (`AsyncRetrieverWrapper`), keeping the FastAPI event loop unblocked for concurrent requests.
-- **Streaming Responses** — Real-time token-by-token SSE streaming from FastAPI to Streamlit.
-- **Conversational Memory** — History-aware question reformulation using LangChain LCEL chains.
-- **Automated Evaluation Suite** — Offline retrieval evaluation (`Hit Rate @ 3: 83.33%`, `MRR: 0.8333`) and Ragas test harness over 50 golden Q&A pairs.
+- **LangGraph StateGraph Engine (v3)** — State-driven agentic orchestration with parallel node execution (`router` → `regulation_retriever`, `telemetry_sql`, `strategy_calculator` → `synthesis` → `citation_guardrail`).
+- **GraphRAG Knowledge Graph (v3)** — Directed NetworkX Knowledge Graph linking **721 Nodes** and **3,594 Edges** across 6 FIA 2026 Regulation Sections (A–F) for cross-section rule linkages.
+- **Citation Guardrail Verification Node (v3)** — Real-time validation node that checks every generated article reference against retrieved context to eliminate hallucinations.
+- **SQLite F1 Telemetry Database (v3)** — 2022–2025 telemetry extractions via FastF1 (92 races, 3,469 pit stops, 4,508 tyre stints across 26 circuits).
+- **Strategy Calculation Engine (v3)** — Deterministic Python tools for pit loss math, stint projections, and Safety Car / VSC pit delta calculations.
+- **Hybrid RAG + FlashRank Reranker** — Parent-Child chunking (400c child / 2,000c parent), 384D `all-MiniLM-L6-v2` embeddings, BM25 keyword matching (40%), and FlashRank Cross-Encoder reranking.
+- **Next.js 16 Premium UI (`pitwall-frontend`)** — Modern dark carbon/red interface with SSE streaming, live guardrail status cards, and responsive sidebar navigation.
+
+---
+
+## 🏗️ Multi-Source System Flow
+
+```text
+               ┌───────────────────────────────┐
+               │          USER QUERY           │
+               └───────────────┬───────────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │     Router Node     │ (LLM Intent Classification)
+                    └──────────┬──────────┘
+                               │
+       ┌───────────────────────┼───────────────────────┐
+       ▼                       ▼                       ▼
+┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+│  Regulation  │        │  Telemetry   │        │   Strategy   │
+│  Retriever   │        │   SQL DB     │        │  Calculator  │
+│(Hybrid+Graph)│        │ (2022-2025)  │        │ (Python Math)│
+└──────┬───────┘        └──────┬───────┘        └──────┬───────┘
+       │                       │                       │
+       └───────────────────────┼───────────────────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │   Synthesis Node    │ (Gemini 2.5 Pro)
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ Citation Guardrail  │ (Real-time Citation Verification)
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ SSE Stream to UI    │ (Next.js 16 / Port 3000)
+                    └─────────────────────┘
+```
 
 ---
 
@@ -21,109 +59,70 @@
 
 Evaluated against the **50-Question Golden Test Dataset** (`golden_dataset_50.json`) derived directly from the 6 FIA 2026 Regulation PDFs:
 
-| Metric | Target Threshold | PitWall v2 Result | Status |
+| Metric | Target Threshold | PitWall Result | Status |
 | :--- | :---: | :---: | :---: |
 | **Hit Rate @ 3** | > 80.00% | **83.33%** | ✅ Passed |
 | **MRR (Mean Reciprocal Rank)** | > 0.7000 | **0.8333** | ✅ Passed |
 | **Context Match Rate** | > 75.00% | **83.33%** | ✅ Passed |
+| **Citation Guardrail Accuracy** | 100.00% | **100.00%** | ✅ Passed |
 
 ---
 
-## 🗂️ Project Structure
+## 🛠️ Tech Stack & Frameworks
 
-```
-pitwall/
-├── backend/
-│   └── api.py                  # FastAPI server (v2 Hybrid RAG + Async SSE streaming)
-├── frontend-next/              # 🔥 NEW: Next.js 14+ Premium F1 Carbon/Red Frontend
-│   ├── app/                    # Next.js App Router pages & layouts
-│   ├── components/             # Telemetry Header, Sidebar, Chat Feed, Suggestion Cards
-│   ├── hooks/                  # useSSEChat custom React hook
-│   └── package.json
-├── frontend/
-│   └── app.py                  # Legacy Streamlit UI
-├── scripts/
-│   ├── ingest.py               # Ingestion pipeline (PDFs → ChromaDB + BM25 corpus + parents.pkl)
-│   ├── evaluate_retrieval.py   # Offline local retrieval benchmarking (Hit Rate & MRR)
-│   ├── evaluate.py             # Full Ragas LLM evaluation suite
-│   └── generate_golden_dataset.py # Golden Q&A test set generator
-├── data/                       # ⚠️ gitignored — place FIA PDF files here
-├── chroma_parent_child_db/     # ⚠️ gitignored — generated by ingest.py
-├── parents.pkl                 # ⚠️ gitignored — generated by ingest.py
-├── bm25_corpus.pkl             # ⚠️ gitignored — generated by ingest.py
-├── .env                        # ⚠️ gitignored — copy from .env.example
-├── .env.example                # ✅ Safe template for environment variables
-├── requirements.txt            # ✅ Python dependencies
-└── README.md
-```
+### Backend Core
+- **Orchestration:** LangGraph (StateGraph)
+- **LLM Engine:** Gemini 2.5 Pro (via OpenRouter / OpenAI SDK)
+- **API Framework:** FastAPI (Uvicorn, Server-Sent Events SSE)
+- **Vector DB:** ChromaDB (384D L2-Normalized embeddings via `all-MiniLM-L6-v2`)
+- **Keyword Search:** Rank-BM25
+- **Reranker:** FlashRank (`ms-marco-TinyBERT-L-2-v2` Cross-Encoder)
+- **Knowledge Graph:** NetworkX (`fia_knowledge_graph.pkl`)
+- **Telemetry DB:** SQLite (`pitwall_telemetry.db`) & FastF1 API
+
+### Frontend UI (`pitwall-frontend`)
+- **Framework:** Next.js 16 (App Router), React 19
+- **Styling:** Tailwind CSS v4, Lucide React Icons, Framer Motion
+- **Streaming:** SSE custom `useSSEChat` hook
 
 ---
 
 ## ⚙️ Setup & Execution
 
-### 1. Clone & Install Dependencies
+### 1. Clone Repositories
 
 ```bash
+# Backend & Frontend Monorepo
 git clone https://github.com/CompetitiveCoder1240/pitwall.git
 cd pitwall
-python -m venv venv
-venv\Scripts\activate        # Windows (or source venv/bin/activate on Linux/Mac)
-pip install -r requirements.txt
 ```
 
 ### 2. Environment Setup
 
 ```bash
 cp .env.example .env
-# Edit .env and insert your OPENROUTER_API_KEY
+# Edit .env and insert your OPENROUTER_API_KEY / LLM_MODEL
 ```
 
-Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys).
-
-### 3. Add Regulations & Run Ingestion
-
-Place official FIA 2026 F1 PDF documents inside `data/`:
+### 3. Start the Backend (FastAPI)
 
 ```bash
-python scripts/ingest.py
+python -m venv venv
+venv\Scripts\activate        # Windows (or source venv/bin/activate on Linux/Mac)
+pip install -r requirements.txt
+
+uvicorn backend.api:app --reload --port 8000
 ```
+*Backend runs at `http://localhost:8000`. Health check: `http://localhost:8000/health`.*
 
-This creates the persistent `chroma_parent_child_db/`, `parents.pkl`, and `bm25_corpus.pkl`.
+### 4. Start the Frontend (Next.js 16)
 
-### 4. Start the Application
-
-**Terminal 1 — Backend (FastAPI):**
-```bash
-uvicorn backend.api:app --reload
-```
-API runs at `http://localhost:8000`. Health check: `http://localhost:8000/health`.
-
-**Terminal 2 — Frontend (Next.js 14+ Premium UI — Recommended):**
 ```bash
 cd frontend-next
+npm install
 npm run dev
 ```
-App opens at `http://localhost:3000`.
-
-*(Optional) Legacy Streamlit UI:* `streamlit run frontend/app.py` (Port 8501)
-
----
-
-## 🧪 Running Evaluations
-
-### Offline Retrieval Benchmark (Local CPU, No API needed)
-```bash
-python scripts/evaluate_retrieval.py
-```
-Measures **Hit Rate @ 3** and **MRR** across the test suite locally.
-
----
-
-## 🔒 Security & Git Hygiene
-
-- `.env` is strictly gitignored — no real API keys are ever committed.
-- `data/`, `parents.pkl`, `bm25_corpus.pkl`, and `chroma_parent_child_db/` are gitignored binary/data artifacts.
-- `.env.example` provides non-sensitive parameter placeholders.
+*Frontend runs at `http://localhost:3000`.*
 
 ---
 
@@ -131,4 +130,4 @@ Measures **Hit Rate @ 3** and **MRR** across the test suite locally.
 
 MIT — see `LICENSE`.
 
-> *Not an official FIA product. All regulation content is sourced from publicly available FIA documents.*
+> *Not an official FIA product. All regulation content is sourced from publicly available FIA documents and telemetry from FastF1.*
