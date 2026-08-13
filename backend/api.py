@@ -16,21 +16,30 @@ Run from the project root: uvicorn backend.api:app --reload
 import os
 import json
 import re
+import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 from collections import defaultdict
 from typing import AsyncIterator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends
-import sqlite3
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from langchain_core.messages import HumanMessage, AIMessage
 from pathlib import Path
+import jwt
 
 from backend.logger import logger
-from backend.auth import get_current_user, get_password_hash, verify_password, create_access_token, DB_PATH
+from backend.auth import (
+    get_password_hash, verify_password, 
+    create_access_token, create_refresh_token, get_current_user,
+    SECRET_KEY, ALGORITHM, DB_PATH
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
@@ -67,6 +76,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Setup Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -93,7 +107,11 @@ class UserLogin(BaseModel):
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +197,36 @@ async def login_for_access_token(user: UserLogin):
         raise HTTPException(status_code=401, detail="Incorrect username or password", headers={"WWW-Authenticate": "Bearer"})
         
     access_token = create_access_token(data={"sub": user.username})
+    refresh_token = create_refresh_token(data={"sub": user.username})
+    
     logger.info(f"User logged in: {user.username}")
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+
+@app.post("/refresh", response_model=Token)
+async def refresh_access_token(req: RefreshRequest):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(req.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        if username is None or token_type != "refresh":
+            raise credentials_exception
+    except jwt.PyJWTError:
+        raise credentials_exception
+        
+    access_token = create_access_token(data={"sub": username})
+    refresh_token = create_refresh_token(data={"sub": username})
+    
+    logger.info(f"Token refreshed for user: {username}")
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
 @app.post("/chat")
-async def chat(req: ChatRequest, current_user: str = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def chat(request: Request, req: ChatRequest, current_user: str = Depends(get_current_user)):
     """
     Streams the LLM response token-by-token as Server-Sent Events (SSE).
     
@@ -241,7 +284,7 @@ async def chat(req: ChatRequest, current_user: str = Depends(get_current_user)):
 
         except Exception as e:
             logger.error(f"Error during graph execution or streaming: {str(e)}", exc_info=True)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': 'An internal server error occurred while processing your request. Please try again.'})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

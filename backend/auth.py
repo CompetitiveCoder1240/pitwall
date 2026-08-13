@@ -22,6 +22,7 @@ security = HTTPBearer()
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-pitwall-key-for-dev-only")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15  # 15 minutes
+REFRESH_TOKEN_EXPIRE_DAYS = 7     # 7 days
 
 def init_db():
     # Ensure data dir exists
@@ -63,6 +64,14 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     logger.info("Access token created for user=%s", data.get("sub", "unknown"))
+    return encoded_jwt
+
+def create_refresh_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    logger.info("Refresh token created for user=%s", data.get("sub", "unknown"))
     return encoded_jwt
 
 # ---------------------------------------------------------------------------
