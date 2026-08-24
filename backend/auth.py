@@ -16,6 +16,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "users.db"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 security = HTTPBearer()
 
@@ -25,6 +26,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 15  # 15 minutes
 REFRESH_TOKEN_EXPIRE_DAYS = 7     # 7 days
 
 def init_db():
+    if SUPABASE_URL:
+        logger.info("Using Supabase for users DB. Skipping local initialization.")
+        return
+        
     # Ensure data dir exists
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
@@ -94,11 +99,20 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise credentials_exception
         
     # Verify user exists in db
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT username FROM users WHERE username = ?", (username,))
-    user = cursor.fetchone()
-    conn.close()
+    user = None
+    if SUPABASE_URL:
+        import psycopg2
+        conn = psycopg2.connect(SUPABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT username FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+        conn.close()
+    else:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT username FROM users WHERE username = ?", (username,))
+        user = cursor.fetchone()
+        conn.close()
     
     if user is None:
         logger.warning("Token valid but user not found in DB: user=%s", username)

@@ -170,27 +170,56 @@ def validate_password(password: str):
 @app.post("/register")
 async def register_user(user: UserCreate):
     validate_password(user.password)
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", 
-                       (user.username, get_password_hash(user.password)))
-        conn.commit()
-        logger.info(f"New user registered: {user.username}")
-    except sqlite3.IntegrityError:
+    
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    
+    if SUPABASE_URL:
+        import psycopg2
+        try:
+            conn = psycopg2.connect(SUPABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", 
+                           (user.username, get_password_hash(user.password)))
+            conn.commit()
+            conn.close()
+            logger.info(f"New user registered in Supabase: {user.username}")
+        except psycopg2.IntegrityError:
+            if 'conn' in locals(): conn.close()
+            logger.warning(f"Registration failed - username already exists: {user.username}")
+            raise HTTPException(status_code=400, detail="Username already registered")
+    else:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", 
+                           (user.username, get_password_hash(user.password)))
+            conn.commit()
+            logger.info(f"New user registered: {user.username}")
+        except sqlite3.IntegrityError:
+            conn.close()
+            logger.warning(f"Registration failed - username already exists: {user.username}")
+            raise HTTPException(status_code=400, detail="Username already registered")
         conn.close()
-        logger.warning(f"Registration failed - username already exists: {user.username}")
-        raise HTTPException(status_code=400, detail="Username already registered")
-    conn.close()
     return {"message": "User registered successfully"}
 
 @app.post("/login", response_model=Token)
 async def login_for_access_token(user: UserLogin):
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT password_hash FROM users WHERE username = ?", (user.username,))
-    db_user = cursor.fetchone()
-    conn.close()
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    db_user = None
+    
+    if SUPABASE_URL:
+        import psycopg2
+        conn = psycopg2.connect(SUPABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT password_hash FROM users WHERE username = %s", (user.username,))
+        db_user = cursor.fetchone()
+        conn.close()
+    else:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT password_hash FROM users WHERE username = ?", (user.username,))
+        db_user = cursor.fetchone()
+        conn.close()
     
     if not db_user or not verify_password(user.password, db_user[0]):
         logger.warning(f"Failed login attempt for: {user.username}")

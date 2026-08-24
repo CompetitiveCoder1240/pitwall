@@ -78,6 +78,8 @@ class PitWallState(TypedDict):
 def build_retriever():
     """Build the hybrid BM25+Vector retriever with FlashRank reranking."""
     from chromadb.config import Settings
+    
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
     logger.info("Loading embedding model...")
     embeddings = HuggingFaceEmbeddings(
@@ -85,12 +87,21 @@ def build_retriever():
         model_kwargs={"local_files_only": True},
     )
 
-    logger.info(f"Loading Chroma from {CHROMA_DIR}...")
-    vectorstore = Chroma(
-        persist_directory=CHROMA_DIR,
-        embedding_function=embeddings,
-        client_settings=Settings(anonymized_telemetry=False, is_persistent=True),
-    )
+    if PINECONE_API_KEY:
+        from langchain_pinecone import PineconeVectorStore
+        logger.info("Loading Pinecone VectorStore...")
+        vectorstore = PineconeVectorStore(
+            index_name="pitwall-regulations",
+            embedding=embeddings,
+            pinecone_api_key=PINECONE_API_KEY
+        )
+    else:
+        logger.info(f"Loading Chroma from {CHROMA_DIR}...")
+        vectorstore = Chroma(
+            persist_directory=CHROMA_DIR,
+            embedding_function=embeddings,
+            client_settings=Settings(anonymized_telemetry=False, is_persistent=True),
+        )
 
     logger.info(f"Loading BM25 corpus from {BM25_PKL}...")
     with open(BM25_PKL, "rb") as f:

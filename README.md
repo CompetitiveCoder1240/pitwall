@@ -74,11 +74,11 @@ Evaluated against the **50-Question Golden Test Dataset** (`golden_dataset_50.js
 - **Orchestration:** LangGraph (StateGraph)
 - **LLM Engine:** Gemini 2.5 Pro (via OpenRouter / OpenAI SDK)
 - **API Framework:** FastAPI (Uvicorn, Server-Sent Events SSE)
-- **Vector DB:** ChromaDB (384D L2-Normalized embeddings via `all-MiniLM-L6-v2`)
+- **Vector DB (Cloud):** Pinecone Serverless (Primary) or Local ChromaDB (Fallback)
 - **Keyword Search:** Rank-BM25
 - **Reranker:** FlashRank (`ms-marco-TinyBERT-L-2-v2` Cross-Encoder)
 - **Knowledge Graph:** NetworkX (`fia_knowledge_graph.pkl`)
-- **Telemetry DB:** SQLite (`pitwall_telemetry.db`) & FastF1 API
+- **SQL DB (Cloud):** Supabase PostgreSQL (Primary) or Local SQLite (Fallback) for Users/Telemetry
 
 ### Frontend UI (`pitwall-frontend`)
 - **Framework:** Next.js 16 (App Router), React 19
