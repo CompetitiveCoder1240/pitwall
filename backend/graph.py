@@ -83,8 +83,7 @@ def build_retriever():
 
     logger.info("Loading embedding model...")
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"local_files_only": True},
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
     if PINECONE_API_KEY:
