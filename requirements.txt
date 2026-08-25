@@ -21,6 +21,8 @@ langchain-openai
 langchain-huggingface
 langchain-classic
 langchain-text-splitters
+langgraph
+langchain-google-genai
 
 # ── Vector store ──────────────────────────────────────────────────────────
 chromadb==1.5.9
@@ -41,6 +43,7 @@ pypdf
 # ── Utilities ─────────────────────────────────────────────────────────────
 python-dotenv
 requests
+networkx
 
 # ── Authentication ────────────────────────────────────────────────────────
 PyJWT==2.8.0
