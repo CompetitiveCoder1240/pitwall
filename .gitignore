@@ -5,9 +5,10 @@
 # ── Secrets & config ──────────────────────────────────────────────────────
 .env
 
-# ── Generated artifacts (re-created by scripts/ingest.py) ─────────────────
-parents.pkl
-bm25_corpus.pkl
+# ── Generated artifacts (re-created by scripts/ingest.py) ──
+# (Note: parents.pkl and bm25_corpus.pkl are explicitly tracked now for Render)
+*.sqlite3
+data/
 chroma_parent_child_db/
 
 # ── Evaluation outputs ────────────────────────────────────────────────────
