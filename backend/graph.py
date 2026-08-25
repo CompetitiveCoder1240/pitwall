@@ -82,7 +82,7 @@ def build_retriever():
 
     logger.info("Loading Google Gemini embedding model...")
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="models/gemini-embedding-2",
         google_api_key=os.getenv("GOOGLE_API_KEY")
     )
 

@@ -79,7 +79,7 @@ if __name__ == "__main__":
     print(f"Indexing {len(child_docs)} chunks to Pinecone...")
     
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="models/gemini-embedding-2",
         google_api_key=os.getenv("GOOGLE_API_KEY")
     )
 
