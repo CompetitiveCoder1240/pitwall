@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.documents import Document
 
@@ -78,9 +78,9 @@ if __name__ == "__main__":
 
     print(f"Indexing {len(child_docs)} chunks to Pinecone...")
     
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"local_files_only": True},
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=os.getenv("GOOGLE_API_KEY")
     )
 
     PineconeVectorStore.from_documents(
