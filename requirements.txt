@@ -27,7 +27,7 @@ langchain-google-genai
 chromadb==1.5.9
 
 # ── Embeddings ────────────────────────────────────────────────────────────
-# Shifted to Google Gemini API (langchain-google-genai handles this)
+langchain-huggingface
 
 # ── Reranker ──────────────────────────────────────────────────────────────
 FlashRank==0.2.10

@@ -27,7 +27,8 @@ from backend.logger import logger
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_core.documents import Document
@@ -80,10 +81,10 @@ def build_retriever():
     
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
-    logger.info("Loading Google Gemini embedding model...")
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-2",
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+    logger.info("Loading Hugging Face Inference API embedding model...")
+    embeddings = HuggingFaceEndpointEmbeddings(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
     )
 
     if PINECONE_API_KEY:
