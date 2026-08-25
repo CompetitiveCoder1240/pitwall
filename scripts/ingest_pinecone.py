@@ -83,12 +83,27 @@ if __name__ == "__main__":
         google_api_key=os.getenv("GOOGLE_API_KEY")
     )
 
-    PineconeVectorStore.from_documents(
-        documents=child_docs,
-        embedding=embeddings,
-        index_name="pitwall-regulations"
+    import time
+    
+    vectorstore = PineconeVectorStore(
+        index_name="pitwall-regulations",
+        embedding=embeddings
     )
-
+    
+    batch_size = 50
+    total_batches = (len(child_docs) + batch_size - 1) // batch_size
+    print(f"Uploading in {total_batches} batches to respect Google's 100 RPM rate limit...")
+    
+    for i in range(0, len(child_docs), batch_size):
+        batch = child_docs[i:i+batch_size]
+        print(f"  -> Uploading batch {i//batch_size + 1}/{total_batches} ({len(batch)} chunks)...")
+        try:
+            vectorstore.add_documents(batch)
+            time.sleep(1.5)  # Sleep 1.5s to ensure we stay under 100 requests per minute
+        except Exception as e:
+            print(f"Rate limit hit! Sleeping for 15 seconds before retrying...")
+            time.sleep(15)
+            vectorstore.add_documents(batch)
     print("Serializing parent vault and BM25 corpus...")
     with open(PARENTS_PKL, "wb") as f: pickle.dump(parent_vault, f)
     with open(BM25_PKL, "wb") as f: pickle.dump(bm25_corpus, f)
