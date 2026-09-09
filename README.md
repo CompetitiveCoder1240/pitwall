@@ -2,7 +2,7 @@
 
 🚀 **Live Deployment:** [https://pitwall-brown.vercel.app/](https://pitwall-brown.vercel.app/)
 
-> **PitWall** is a cloud-native, AI-powered F1 Race Strategy & Regulations Consultant that synthesizes **FIA 2026 Regulation PDFs**, **2022–2025 F1 Telemetry Data**, and **Deterministic Strategy Calculators** into real-time, verified engineering insights. Powered by **LangGraph**, **Pinecone**, **Supabase**, and **Hugging Face Serverless Inference**
+> **PitWall** is a cloud-native, AI-powered F1 Race Strategy & Regulations Consultant that synthesizes **FIA 2026 Regulation PDFs**, **2022–2025 F1 Telemetry Data**, and **Deterministic Strategy Calculators** into real-time, verified engineering insights. Powered by **LangGraph**, **Pinecone**, **Supabase**, and **Hugging Face Serverless Inference**.
 
 ---
 
