@@ -191,7 +191,7 @@ def query_telemetry(
 def calculate_strategy(
     circuit_name: str,
     current_lap: int,
-    total_laps: int,
+    total_laps: Optional[int] = None,
     flag_condition: str = "green",
     target_compound: str = "MEDIUM",
     base_lap_time: Optional[float] = None,
@@ -218,11 +218,7 @@ def calculate_strategy(
     """
     logger.info(f"Strategy calculation: circuit={circuit_name}, lap={current_lap}/{total_laps}, flag={flag_condition}, compound={target_compound}")
 
-    remaining_laps = total_laps - current_lap
-    if remaining_laps <= 0:
-        return "Race is already complete — no strategy calculation needed."
-
-    # Fetch circuit summary from DB
+    # Fetch circuit summary from DB first to resolve track info
     summaries = _query_db(
         "SELECT * FROM circuit_summaries WHERE circuit_name LIKE ?",
         (f"%{circuit_name}%",),
@@ -233,6 +229,21 @@ def calculate_strategy(
         return f"No telemetry data found for circuit matching '{circuit_name}'."
 
     summary = summaries[0]
+
+    # Resolve total_laps if not provided
+    if not total_laps:
+        laps_row = _query_db(
+            "SELECT total_laps FROM circuits WHERE circuit_name LIKE ? LIMIT 1", 
+            (f"%{circuit_name}%",)
+        )
+        if laps_row and laps_row[0]['total_laps']:
+            total_laps = int(laps_row[0]['total_laps'])
+        else:
+            total_laps = 55 # Ultimate fallback
+            
+    remaining_laps = total_laps - current_lap
+    if remaining_laps <= 0:
+        return "Race is already complete — no strategy calculation needed."
 
     # --- Pit loss calculation ---
     green_flag_loss = summary["avg_green_flag_pit_loss"] or 25.0

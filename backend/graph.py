@@ -92,8 +92,8 @@ class PitWallRouterOutput(BaseModel):
     telemetry_query_type: Optional[str] = Field(default="summary", description="Type: 'summary', 'pit_stops', 'tyre_stints', or 'all_circuits'.")
     
     strategy_circuit: Optional[str] = Field(default=None, description="Circuit name for strategy calculation (e.g. 'Silverstone').")
-    strategy_current_lap: Optional[int] = Field(default=25, description="Current lap number (default 25 if unknown).")
-    strategy_total_laps: Optional[int] = Field(default=55, description="Total race laps (default 55 if unknown).")
+    strategy_current_lap: Optional[int] = Field(default=1, description="Current lap number (default 1 if unknown).")
+    strategy_total_laps: Optional[int] = Field(default=None, description="Total race laps (leave None to auto-fetch from DB).")
     strategy_flag_condition: Optional[str] = Field(default="green", description="Flag condition: 'green', 'safety_car', or 'vsc'.")
     strategy_target_compound: Optional[str] = Field(default="MEDIUM", description="Target compound: 'SOFT', 'MEDIUM', or 'HARD'.")
     strategy_driver: Optional[str] = Field(default="VER", description="3-letter driver code (e.g., 'VER', 'NOR', 'HAM'). Default to 'VER' if missing.")
@@ -415,8 +415,8 @@ def make_strategy_node():
 
         result = calculate_strategy.invoke({
             "circuit_name": circuit_name,
-            "current_lap": params.get("strategy_current_lap", 25),
-            "total_laps": params.get("strategy_total_laps", 55),
+            "current_lap": params.get("strategy_current_lap", 1),
+            "total_laps": params.get("strategy_total_laps"),
             "flag_condition": params.get("strategy_flag_condition", "green"),
             "target_compound": params.get("strategy_target_compound", "MEDIUM"),
             "driver": params.get("strategy_driver", "VER")
