@@ -276,10 +276,77 @@ def calculate_strategy(
     # --- Stint projection ---
     total_stint_time = 0.0
     lap_times = []
-    for lap_offset in range(remaining_laps):
-        projected_time = base_lap_time + (deg_per_lap * lap_offset)
-        total_stint_time += projected_time
-        lap_times.append(projected_time)
+    
+    # Try to load the Hybrid AI Models
+    use_hybrid = False
+    try:
+        import joblib
+        import pandas as pd
+        import numpy as np
+        from xgboost import XGBRegressor
+        
+        MODELS_DIR = PROJECT_ROOT / "models"
+        mvr_path = MODELS_DIR / "mvr_anchor.pkl"
+        xgb_path = MODELS_DIR / "xgb_booster.json"
+        
+        if mvr_path.exists() and xgb_path.exists():
+            mvr_data = joblib.load(mvr_path)
+            mvr_model = mvr_data["mvr_model"]
+            mvr_features = mvr_data["mvr_features"]
+            circuit_cats = mvr_data["circuit_categories"]
+            compound_cats = mvr_data["compound_categories"]
+            
+            xgb_model = XGBRegressor()
+            xgb_model.load_model(xgb_path)
+            use_hybrid = True
+    except Exception as e:
+        logger.warning(f"Hybrid model fallback (could not load): {e}")
+
+    if use_hybrid:
+        logger.info("Using Hybrid AI Model for stint projection.")
+        laps_data = []
+        for lap_offset in range(remaining_laps):
+            actual_lap = current_lap + lap_offset
+            laps_data.append({
+                "Circuit": summary['circuit_name'],
+                "Compound": compound_upper,
+                "TyreLife": lap_offset + 1,
+                "FuelLoad": max(0, total_laps - actual_lap),
+                "TrackTemp": 35.0  # Default assumed track temp
+            })
+            
+        df_laps = pd.DataFrame(laps_data)
+        
+        # 1. Physics Anchor (MVR)
+        df_mvr = pd.DataFrame(0, index=np.arange(len(df_laps)), columns=mvr_features)
+        df_mvr['FuelLoad'] = df_laps['FuelLoad']
+        
+        circuit_col = f"Circuit_{summary['circuit_name']}"
+        if circuit_col in df_mvr.columns:
+            df_mvr[circuit_col] = 1
+            
+        compound_col = f"Compound_{compound_upper}"
+        if compound_col in df_mvr.columns:
+            df_mvr[compound_col] = 1
+            
+        linear_preds = mvr_model.predict(df_mvr)
+        
+        # 2. ML Booster (XGBoost)
+        df_xgb = df_laps[['Circuit', 'Compound', 'TyreLife', 'TrackTemp']].copy()
+        df_xgb['Circuit'] = pd.Categorical(df_xgb['Circuit'], categories=circuit_cats)
+        df_xgb['Compound'] = pd.Categorical(df_xgb['Compound'], categories=compound_cats)
+        
+        residual_preds = xgb_model.predict(df_xgb)
+        
+        # Combine
+        lap_times = (linear_preds + residual_preds).tolist()
+        total_stint_time = sum(lap_times)
+    else:
+        logger.info("Using basic math fallback for stint projection.")
+        for lap_offset in range(remaining_laps):
+            projected_time = base_lap_time + (deg_per_lap * lap_offset)
+            total_stint_time += projected_time
+            lap_times.append(projected_time)
 
     total_race_time = total_stint_time + pit_loss
 
