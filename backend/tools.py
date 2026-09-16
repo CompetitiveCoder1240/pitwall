@@ -195,6 +195,7 @@ def calculate_strategy(
     flag_condition: str = "green",
     target_compound: str = "MEDIUM",
     base_lap_time: Optional[float] = None,
+    driver: str = "VER"
 ) -> str:
     """Calculate race strategy projections for a pit stop decision.
 
@@ -210,7 +211,7 @@ def calculate_strategy(
         flag_condition: Current flag state - 'green', 'safety_car', or 'vsc'.
         target_compound: Tyre compound to switch to - 'SOFT', 'MEDIUM', or 'HARD'.
         base_lap_time: Optional override for base lap time in seconds.
-                       If not provided, uses the circuit average from the database.
+        driver: 3-letter driver code (e.g. 'VER', 'NOR').
 
     Returns:
         Formatted strategy analysis with pit loss, stint projection, and recommendation.
@@ -328,6 +329,10 @@ def calculate_strategy(
         compound_col = f"Compound_{compound_upper}"
         if compound_col in df_mvr.columns:
             df_mvr[compound_col] = 1
+            
+        driver_col = f"Driver_{driver.upper()}"
+        if driver_col in df_mvr.columns:
+            df_mvr[driver_col] = 1
             
         linear_preds = mvr_model.predict(df_mvr)
         

@@ -30,7 +30,8 @@ from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage 
+
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
 from langchain_community.retrievers import BM25Retriever
@@ -53,6 +54,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 os.environ.pop("DATABASE_URL", None)
 
 
+from pydantic import BaseModel, Field
+from typing import Optional
+
 # ---------------------------------------------------------------------------
 # State Definition
 # ---------------------------------------------------------------------------
@@ -60,16 +64,39 @@ class PitWallState(TypedDict):
     """Central state dictionary passed between LangGraph nodes."""
     user_input: str
     chat_history: list
+    
     # Router decisions
     needs_regulations: bool
     needs_telemetry: bool
     needs_strategy: bool
+    
+    # Structured Parameters extracted by Router
+    telemetry_params: dict
+    strategy_params: dict
+    
     # Tool outputs
     regulation_context: str
     telemetry_data: str
     strategy_analysis: str
+    
     # Final output
     final_response: str
+
+class PitWallRouterOutput(BaseModel):
+    """Routing and parameter extraction for PitWall."""
+    needs_regulations: bool = Field(default=True, description="True if asking about rules, regulations, penalties, or car specs.")
+    needs_telemetry: bool = Field(default=False, description="True if asking about past race data, lap times, pit stops, or degradation.")
+    needs_strategy: bool = Field(default=False, description="True if asking for race strategy, pit decisions, or lap projections.")
+    
+    telemetry_circuit: Optional[str] = Field(default=None, description="Circuit name for telemetry (e.g. 'Monza').")
+    telemetry_query_type: Optional[str] = Field(default="summary", description="Type: 'summary', 'pit_stops', 'tyre_stints', or 'all_circuits'.")
+    
+    strategy_circuit: Optional[str] = Field(default=None, description="Circuit name for strategy calculation (e.g. 'Silverstone').")
+    strategy_current_lap: Optional[int] = Field(default=25, description="Current lap number (default 25 if unknown).")
+    strategy_total_laps: Optional[int] = Field(default=55, description="Total race laps (default 55 if unknown).")
+    strategy_flag_condition: Optional[str] = Field(default="green", description="Flag condition: 'green', 'safety_car', or 'vsc'.")
+    strategy_target_compound: Optional[str] = Field(default="MEDIUM", description="Target compound: 'SOFT', 'MEDIUM', or 'HARD'.")
+    strategy_driver: Optional[str] = Field(default="VER", description="3-letter driver code (e.g., 'VER', 'NOR', 'HAM'). Default to 'VER' if missing.")
 
 
 # ---------------------------------------------------------------------------
@@ -169,59 +196,66 @@ def make_router_node(llm):
     router_prompt = ChatPromptTemplate.from_messages([
         ("system", (
             "You are an expert F1 intent classifier for PitWall.\n"
-            "Analyze the user's input and determine which data sources are needed.\n"
-            "Return EXACTLY three comma-separated boolean values (true/false) for:\n"
-            "needs_regulations, needs_telemetry, needs_strategy\n\n"
+            "Analyze the user's input and determine which data sources are needed, extracting parameters.\n"
             "Rules:\n"
-            "- needs_regulations = true if the question asks about FIA rules, technical/sporting/financial "
-            "specifications, wing dimensions, weight limits, parc fermé, penalties, cost cap, or regulations.\n"
-            "- needs_telemetry = true if the question asks about past F1 race data (2022-2025), pit stop durations, "
-            "tyre degradation, circuit-specific performance, or lap times.\n"
-            "- needs_strategy = true if the question involves pit stop strategy decisions, stint projections, "
-            "tyre choice optimization, or race time calculations.\n\n"
-            "Examples:\n"
-            "Q: 'What is the minimum car weight?' → true, false, false\n"
-            "Q: 'What is the average pit stop time at Monza?' → false, true, false\n"
-            "Q: 'Should I pit under safety car at Silverstone on lap 30?' → true, true, true\n"
-            "Q: 'Can I replace a front wing under Parc Fermé and what is my pit loss?' → true, true, true\n"
-            "Q: 'Compare tyre degradation for soft vs medium at Spa' → false, true, false\n"
+            "- needs_regulations = true if the question asks about FIA rules, technical/sporting/financial specifications.\n"
+            "- needs_telemetry = true if the question asks about past F1 race data (2022-2025), pit stop durations, tyre degradation, or lap times.\n"
+            "- needs_strategy = true if the question involves pit stop strategy decisions, stint projections, or race time calculations.\n"
+            "Extract circuit names (e.g., 'Monza', 'Silverstone') and strategy details (lap numbers, flag conditions, compounds) if present.\n"
         )),
         MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
     ])
 
     def router_node(state: PitWallState) -> dict:
-        """Classify user intent and set routing flags."""
+        """Classify user intent and extract structured parameters."""
         try:
-            response = llm.invoke(
+            structured_llm = llm.with_structured_output(PitWallRouterOutput)
+            result: PitWallRouterOutput = structured_llm.invoke(
                 router_prompt.format_messages(
                     input=state["user_input"],
                     chat_history=state.get("chat_history", []),
                 )
             )
-            text = _extract_text(response.content).strip().lower()
-
-            # Parse the three boolean values
-            parts = [p.strip() for p in text.split(",")]
-            needs_reg = "true" in parts[0] if len(parts) > 0 else True
-            needs_tel = "true" in parts[1] if len(parts) > 1 else False
-            needs_str = "true" in parts[2] if len(parts) > 2 else False
-
+            
+            needs_reg = result.needs_regulations
+            needs_tel = result.needs_telemetry
+            needs_str = result.needs_strategy
+            
             # Fallback: if nothing is detected, default to regulations
             if not needs_reg and not needs_tel and not needs_str:
                 needs_reg = True
+                
+            telemetry_params = {
+                "telemetry_circuit": result.telemetry_circuit,
+                "telemetry_query_type": result.telemetry_query_type,
+            }
+            strategy_params = {
+                "strategy_circuit": result.strategy_circuit,
+                "strategy_current_lap": result.strategy_current_lap,
+                "strategy_total_laps": result.strategy_total_laps,
+                "strategy_flag_condition": result.strategy_flag_condition,
+                "strategy_target_compound": result.strategy_target_compound,
+                "strategy_driver": result.strategy_driver,
+            }
+                
         except Exception as e:
             logger.error(f"Router LLM call failed: {e}", exc_info=True)
             needs_reg = True
             needs_tel = False
             needs_str = False
+            telemetry_params = {}
+            strategy_params = {}
 
         logger.info(f"Router Decision -> Regulations: {needs_reg} | Telemetry: {needs_tel} | Strategy: {needs_str}")
+        logger.info(f"Extracted Params -> Tel: {telemetry_params} | Str: {strategy_params}")
 
         return {
             "needs_regulations": needs_reg,
             "needs_telemetry": needs_tel,
             "needs_strategy": needs_str,
+            "telemetry_params": telemetry_params,
+            "strategy_params": strategy_params,
         }
 
     return router_node
@@ -342,39 +376,17 @@ def make_telemetry_node():
             return {"telemetry_data": ""}
 
         logger.info("Executing Telemetry Node...")
-
-        # Use the LLM-friendly tool interface — pass the user's question
-        # and let the tool extract circuit names via pattern matching
-        user_input = state["user_input"].lower()
-
-        # Simple circuit name extraction from the user query
-        from backend.tools import _query_db
-        circuits = _query_db("SELECT DISTINCT circuit_name FROM circuit_summaries")
-        circuit_names = [c["circuit_name"] for c in circuits]
-
-        matched_circuit = None
-        for name in circuit_names:
-            if name.lower() in user_input:
-                matched_circuit = name
-                break
-
-        if not matched_circuit:
-            # Try partial matching
-            for name in circuit_names:
-                for word in name.lower().split():
-                    if len(word) > 3 and word in user_input:
-                        matched_circuit = name
-                        break
-                if matched_circuit:
-                    break
-
-        if not matched_circuit:
+        
+        params = state.get("telemetry_params", {})
+        circuit_name = params.get("telemetry_circuit")
+        
+        if not circuit_name:
             return {"telemetry_data": "No specific circuit identified in the query. Available circuits can be listed with the telemetry tool."}
 
         # Get circuit summary
         summary = query_telemetry.invoke({
-            "circuit_name": matched_circuit,
-            "query_type": "summary",
+            "circuit_name": circuit_name,
+            "query_type": params.get("telemetry_query_type", "summary"),
         })
 
         result = summary
@@ -395,60 +407,19 @@ def make_strategy_node():
 
         logger.info("Executing Strategy Node...")
 
-        user_input = state["user_input"].lower()
-
-        # Extract circuit name
-        from backend.tools import _query_db
-        circuits = _query_db("SELECT DISTINCT circuit_name FROM circuit_summaries")
-        circuit_names = [c["circuit_name"] for c in circuits]
-
-        matched_circuit = None
-        for name in circuit_names:
-            if name.lower() in user_input:
-                matched_circuit = name
-                break
-        if not matched_circuit:
-            for name in circuit_names:
-                for word in name.lower().split():
-                    if len(word) > 3 and word in user_input:
-                        matched_circuit = name
-                        break
-                if matched_circuit:
-                    break
-
-        if not matched_circuit:
+        params = state.get("strategy_params", {})
+        circuit_name = params.get("strategy_circuit")
+        
+        if not circuit_name:
             return {"strategy_analysis": "Could not identify a specific circuit for strategy calculation."}
 
-        # Extract lap numbers from query (simple regex-free parsing)
-        import re
-        lap_matches = re.findall(r"lap\s*(\d+)", user_input)
-        total_matches = re.findall(r"(\d+)\s*(?:total\s*)?laps", user_input)
-
-        current_lap = int(lap_matches[0]) if lap_matches else 25
-        total_laps = int(total_matches[0]) if total_matches else 55
-
-        # Detect flag condition
-        if "safety car" in user_input or "sc " in user_input:
-            flag = "safety_car"
-        elif "vsc" in user_input or "virtual" in user_input:
-            flag = "vsc"
-        else:
-            flag = "green"
-
-        # Detect compound
-        if "soft" in user_input:
-            compound = "SOFT"
-        elif "hard" in user_input:
-            compound = "HARD"
-        else:
-            compound = "MEDIUM"
-
         result = calculate_strategy.invoke({
-            "circuit_name": matched_circuit,
-            "current_lap": current_lap,
-            "total_laps": total_laps,
-            "flag_condition": flag,
-            "target_compound": compound,
+            "circuit_name": circuit_name,
+            "current_lap": params.get("strategy_current_lap", 25),
+            "total_laps": params.get("strategy_total_laps", 55),
+            "flag_condition": params.get("strategy_flag_condition", "green"),
+            "target_compound": params.get("strategy_target_compound", "MEDIUM"),
+            "driver": params.get("strategy_driver", "VER")
         })
 
         logger.info(f"Strategy Node result length: {len(result)}")
@@ -615,12 +586,30 @@ def build_pitwall_graph():
     graph.add_node("citation_guardrail", citation_guardrail)
 
     # Define edges
+    # Define edges
     graph.set_entry_point("router")
 
-    # After router, always run all three tool nodes
-    graph.add_edge("router", "regulation_retriever")
-    graph.add_edge("router", "telemetry_sql")
-    graph.add_edge("router", "strategy_calculator")
+    def route_tools(state: PitWallState) -> list[str]:
+        destinations = []
+        if state.get("needs_regulations", False):
+            destinations.append("regulation_retriever")
+        if state.get("needs_telemetry", False):
+            destinations.append("telemetry_sql")
+        if state.get("needs_strategy", False):
+            destinations.append("strategy_calculator")
+            
+        if not destinations:
+            # Fallback
+            destinations.append("regulation_retriever")
+            
+        return destinations
+
+    # Conditional branching: router decides which of the 3 tools to run
+    graph.add_conditional_edges(
+        "router",
+        route_tools,
+        ["regulation_retriever", "telemetry_sql", "strategy_calculator"]
+    )
 
     # All tool nodes feed into synthesis
     graph.add_edge("regulation_retriever", "synthesis")

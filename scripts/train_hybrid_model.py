@@ -82,9 +82,10 @@ def fetch_and_clean_data():
                             all_laps.append({
                                 "Circuit": event['EventName'],
                                 "Compound": row['Compound'],
+                                "Driver": row['Driver'],
                                 "TyreLife": row['TyreLife'],
                                 "FuelLoad": max(0, row['FuelLoad_Laps']),
-                                "TrackTemp": 35.0, # Placeholder if missing, ideally merged from weather_data
+                                "TrackTemp": 35.0, # Placeholder if missing
                                 "LapTime_Sec": row['LapTime_Sec']
                             })
                             
@@ -115,10 +116,10 @@ def train_hybrid_model():
     # STEP 1: The Physics Anchor (Multivariate Regression)
     # ---------------------------------------------------------
     logger.info("Training Linear Physics Anchor...")
-    # One-hot encode the Circuit and Compound to give the MVR a baseline pace
-    df_linear = pd.get_dummies(df, columns=['Circuit', 'Compound'], drop_first=True)
+    # One-hot encode Circuit, Compound, and Driver to set exact baseline pace
+    df_linear = pd.get_dummies(df, columns=['Circuit', 'Compound', 'Driver'], drop_first=True)
     
-    # Linear features: Baseline pace (Circuit + Compound) + Linear Fuel Burn
+    # Linear features: Baseline pace + Linear Fuel Burn
     X_linear = df_linear.drop(columns=['LapTime_Sec', 'TyreLife', 'TrackTemp'])
     y = df_linear['LapTime_Sec']
     
@@ -149,9 +150,15 @@ def train_hybrid_model():
     # ---------------------------------------------------------
     logger.info(f"Training complete. Saving models to {MODEL_DIR}...")
     
+    # Save categorical mapping for exact inference alignment
+    circuit_cats = list(df['Circuit'].cat.categories)
+    compound_cats = list(df['Compound'].cat.categories)
+    
     joblib.dump({
         "mvr_model": mvr,
-        "mvr_features": list(X_linear.columns)
+        "mvr_features": list(X_linear.columns),
+        "circuit_categories": circuit_cats,
+        "compound_categories": compound_cats
     }, os.path.join(MODEL_DIR, "mvr_anchor.pkl"))
     
     xgb.save_model(os.path.join(MODEL_DIR, "xgb_booster.json"))
