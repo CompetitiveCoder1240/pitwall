@@ -186,6 +186,17 @@ def build_llm():
         max_output_tokens=2048,
     )
 
+def build_fast_llm():
+    """Build a fast, inexpensive LLM for routing and extraction via OpenRouter."""
+    from langchain_openai import ChatOpenAI
+    return ChatOpenAI(
+        model="openai/gpt-4o-mini",
+        openai_api_key=os.getenv("OPENROUTER_API_KEY"),
+        openai_api_base=os.getenv("OPENROUTER_ENDPOINT", "https://openrouter.ai/api/v1"),
+        temperature=0,
+        max_tokens=500,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Node Functions
@@ -565,9 +576,10 @@ def build_pitwall_graph():
     # Build components
     retriever, parent_vault, bm25_retriever = build_retriever()
     llm = build_llm()
+    fast_llm = build_fast_llm()
 
     # Create nodes
-    router = make_router_node(llm)
+    router = make_router_node(fast_llm)
     regulation = make_regulation_node(retriever, parent_vault, bm25_retriever)
     telemetry = make_telemetry_node()
     strategy = make_strategy_node()
