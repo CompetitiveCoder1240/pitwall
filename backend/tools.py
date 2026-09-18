@@ -195,7 +195,8 @@ def calculate_strategy(
     flag_condition: str = "green",
     target_compound: str = "MEDIUM",
     base_lap_time: Optional[float] = None,
-    driver: str = "VER"
+    driver: str = "VER",
+    track_temp: Optional[float] = None
 ) -> str:
     """Calculate race strategy projections for a pit stop decision.
 
@@ -212,11 +213,14 @@ def calculate_strategy(
         target_compound: Tyre compound to switch to - 'SOFT', 'MEDIUM', or 'HARD'.
         base_lap_time: Optional override for base lap time in seconds.
         driver: 3-letter driver code (e.g. 'VER', 'NOR').
+        track_temp: Track surface temperature in Celsius (e.g. 45.0). Defaults to 35.0 if not provided.
 
     Returns:
         Formatted strategy analysis with pit loss, stint projection, and recommendation.
     """
-    logger.info(f"Strategy calculation: circuit={circuit_name}, lap={current_lap}/{total_laps}, flag={flag_condition}, compound={target_compound}")
+    # Resolve track temperature: user-provided > default
+    effective_track_temp = track_temp if track_temp is not None else 35.0
+    logger.info(f"Strategy calculation: circuit={circuit_name}, lap={current_lap}/{total_laps}, flag={flag_condition}, compound={target_compound}, track_temp={effective_track_temp}")
 
     # Fetch circuit summary from DB first to resolve track info
     summaries = _query_db(
@@ -324,7 +328,7 @@ def calculate_strategy(
                 "Compound": compound_upper,
                 "TyreLife": lap_offset + 1,
                 "FuelLoad": max(0, total_laps - actual_lap),
-                "TrackTemp": 35.0  # Default assumed track temp
+                "TrackTemp": effective_track_temp
             })
             
         df_laps = pd.DataFrame(laps_data)
@@ -332,6 +336,7 @@ def calculate_strategy(
         # 1. Physics Anchor (MVR)
         df_mvr = pd.DataFrame(0, index=np.arange(len(df_laps)), columns=mvr_features)
         df_mvr['FuelLoad'] = df_laps['FuelLoad']
+        df_mvr['TrackTemp'] = df_laps['TrackTemp']
         
         circuit_col = f"Circuit_{summary['circuit_name']}"
         if circuit_col in df_mvr.columns:

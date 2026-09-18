@@ -97,6 +97,7 @@ class PitWallRouterOutput(BaseModel):
     strategy_flag_condition: Optional[str] = Field(default="green", description="Flag condition: 'green', 'safety_car', or 'vsc'.")
     strategy_target_compound: Optional[str] = Field(default="MEDIUM", description="Target compound: 'SOFT', 'MEDIUM', or 'HARD'.")
     strategy_driver: Optional[str] = Field(default="VER", description="3-letter driver code (e.g., 'VER', 'NOR', 'HAM'). Default to 'VER' if missing.")
+    strategy_track_temp: Optional[float] = Field(default=None, description="Track surface temperature in Celsius (e.g. 45.0). Leave None if user doesn't mention temperature.")
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,7 @@ def make_router_node(llm):
                 "strategy_flag_condition": result.strategy_flag_condition,
                 "strategy_target_compound": result.strategy_target_compound,
                 "strategy_driver": result.strategy_driver,
+                "strategy_track_temp": result.strategy_track_temp,
             }
                 
         except Exception as e:
@@ -430,7 +432,8 @@ def make_strategy_node():
             "total_laps": params.get("strategy_total_laps"),
             "flag_condition": params.get("strategy_flag_condition", "green"),
             "target_compound": params.get("strategy_target_compound", "MEDIUM"),
-            "driver": params.get("strategy_driver", "VER")
+            "driver": params.get("strategy_driver", "VER"),
+            "track_temp": params.get("strategy_track_temp")
         })
 
         logger.info(f"Strategy Node result length: {len(result)}")

@@ -29,8 +29,33 @@ XGB_PARAMS = {
     "random_state": 42
 }
 
+
+def _get_track_temp_for_lap(weather_data, lap_time_obj):
+    """Get the closest TrackTemp reading for a given lap's timestamp.
+    
+    FastF1 weather_data has a 'Time' column (timedelta from session start).
+    Each lap has a 'Time' field (timedelta when the lap ended).
+    We find the weather reading closest to the lap's end time.
+    """
+    if weather_data is None or weather_data.empty or lap_time_obj is None:
+        return None
+    
+    try:
+        # Find the weather reading with the smallest time difference
+        time_diffs = (weather_data['Time'] - lap_time_obj).abs()
+        closest_idx = time_diffs.idxmin()
+        return float(weather_data.loc[closest_idx, 'TrackTemp'])
+    except Exception:
+        return None
+
+
 def fetch_and_clean_data():
-    """Fetch FastF1 data and build the raw feature dataset."""
+    """Fetch FastF1 data and build the raw feature dataset.
+    
+    Uses circuit_name (e.g. 'Monza') instead of EventName (e.g. 'Italian Grand Prix')
+    to align with the SQLite DB schema used during inference.
+    Extracts real TrackTemp from FastF1 weather data per lap.
+    """
     all_laps = []
     
     for season in SEASONS:
@@ -52,13 +77,21 @@ def fetch_and_clean_data():
                 # pick_quicklaps() automatically drops VSC/SC and in/out laps
                 laps = laps.pick_quicklaps() 
                 
-                # Align weather data to get TrackTemp for each lap
+                # Get weather data for TrackTemp alignment
                 weather_data = session.weather_data
+                
+                # Use the circuit short name (e.g. "Monza") to match DB inference
+                circuit_name = event.get('Location', event['EventName'])
                 
                 total_laps = session.total_laps if hasattr(session, 'total_laps') and session.total_laps else laps['LapNumber'].max()
                 
+                # Compute session-average TrackTemp as fallback
+                session_avg_temp = 35.0
+                if weather_data is not None and not weather_data.empty and 'TrackTemp' in weather_data.columns:
+                    session_avg_temp = float(weather_data['TrackTemp'].mean())
+                
                 for driver in laps['Driver'].unique():
-                    driver_laps = laps.pick_driver(driver).copy()
+                    driver_laps = laps.pick_drivers(driver).copy()
                     driver_laps.dropna(subset=['LapTime', 'TyreLife', 'Compound'], inplace=True)
                     
                     if driver_laps.empty:
@@ -79,13 +112,17 @@ def fetch_and_clean_data():
                         clean_stint = stint_data[stint_data['LapTime_Sec'] <= (stint_median * 1.03)]
                         
                         for _, row in clean_stint.iterrows():
+                            # Extract real TrackTemp for this specific lap
+                            lap_temp = _get_track_temp_for_lap(weather_data, row.get('Time'))
+                            track_temp = lap_temp if lap_temp is not None else session_avg_temp
+                            
                             all_laps.append({
-                                "Circuit": event['EventName'],
+                                "Circuit": circuit_name,
                                 "Compound": row['Compound'],
                                 "Driver": row['Driver'],
                                 "TyreLife": row['TyreLife'],
                                 "FuelLoad": max(0, row['FuelLoad_Laps']),
-                                "TrackTemp": 35.0, # Placeholder if missing
+                                "TrackTemp": track_temp,
                                 "LapTime_Sec": row['LapTime_Sec']
                             })
                             
@@ -111,6 +148,8 @@ def train_hybrid_model():
     df = df[df['Compound'].isin(['SOFT', 'MEDIUM', 'HARD'])]
     
     logger.info(f"Dataset compiled: {len(df)} clean racing laps.")
+    logger.info(f"TrackTemp range: {df['TrackTemp'].min():.1f} - {df['TrackTemp'].max():.1f} deg C (mean: {df['TrackTemp'].mean():.1f})")
+    logger.info(f"Circuits: {df['Circuit'].nunique()} unique circuit names")
 
     # ---------------------------------------------------------
     # STEP 1: The Physics Anchor (Multivariate Regression)
@@ -119,8 +158,8 @@ def train_hybrid_model():
     # One-hot encode Circuit, Compound, and Driver to set exact baseline pace
     df_linear = pd.get_dummies(df, columns=['Circuit', 'Compound', 'Driver'], drop_first=True)
     
-    # Linear features: Baseline pace + Linear Fuel Burn
-    X_linear = df_linear.drop(columns=['LapTime_Sec', 'TyreLife', 'TrackTemp'])
+    # Linear features: Baseline pace + Linear Fuel Burn + TrackTemp
+    X_linear = df_linear.drop(columns=['LapTime_Sec', 'TyreLife'])
     y = df_linear['LapTime_Sec']
     
     mvr = LinearRegression()
