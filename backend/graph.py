@@ -98,6 +98,8 @@ class PitWallRouterOutput(BaseModel):
     strategy_target_compound: Optional[str] = Field(default="MEDIUM", description="Target compound: 'SOFT', 'MEDIUM', or 'HARD'.")
     strategy_driver: Optional[str] = Field(default="VER", description="3-letter driver code (e.g., 'VER', 'NOR', 'HAM'). Default to 'VER' if missing.")
     strategy_track_temp: Optional[float] = Field(default=None, description="Track surface temperature in Celsius (e.g. 45.0). Leave None if user doesn't mention temperature.")
+    strategy_current_compound: Optional[str] = Field(default=None, description="Compound the driver is currently racing on (e.g. 'SOFT'). Only set if user specifies their current tyres.")
+    strategy_tyre_age: Optional[int] = Field(default=None, description="Number of laps completed on the current tyre set. Leave None if user doesn't mention it.")
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +252,8 @@ def make_router_node(llm):
                 "strategy_target_compound": result.strategy_target_compound,
                 "strategy_driver": result.strategy_driver,
                 "strategy_track_temp": result.strategy_track_temp,
+                "strategy_current_compound": result.strategy_current_compound,
+                "strategy_tyre_age": result.strategy_tyre_age,
             }
                 
         except Exception as e:
@@ -433,7 +437,9 @@ def make_strategy_node():
             "flag_condition": params.get("strategy_flag_condition", "green"),
             "target_compound": params.get("strategy_target_compound", "MEDIUM"),
             "driver": params.get("strategy_driver", "VER"),
-            "track_temp": params.get("strategy_track_temp")
+            "track_temp": params.get("strategy_track_temp"),
+            "current_compound": params.get("strategy_current_compound"),
+            "tyre_age": params.get("strategy_tyre_age"),
         })
 
         logger.info(f"Strategy Node result length: {len(result)}")
