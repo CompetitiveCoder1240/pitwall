@@ -20,7 +20,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 security = HTTPBearer()
 
-SECRET_KEY = os.getenv("JWT_SECRET")
+SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-pitwall-key-for-dev-only")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15  # 15 minutes
 REFRESH_TOKEN_EXPIRE_DAYS = 7     # 7 days

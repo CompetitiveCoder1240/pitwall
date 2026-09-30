@@ -23,6 +23,12 @@ from collections import defaultdict
 from typing import AsyncIterator
 
 from dotenv import load_dotenv
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
+os.environ.pop("DATABASE_URL", None)
+
 from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -31,7 +37,6 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from langchain_core.messages import HumanMessage, AIMessage
-from pathlib import Path
 import jwt
 
 from backend.logger import logger
@@ -40,10 +45,6 @@ from backend.auth import (
     create_access_token, create_refresh_token, get_current_user,
     SECRET_KEY, ALGORITHM, DB_PATH
 )
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_PROJECT_ROOT / ".env")
-os.environ.pop("DATABASE_URL", None)
 
 # ---------------------------------------------------------------------------
 # Global state
