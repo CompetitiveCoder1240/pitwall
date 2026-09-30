@@ -23,7 +23,7 @@ PARENTS_PATH = os.path.join(PROJECT_ROOT, "f1-rag-chatbot", "parents.pkl")
 if not os.path.exists(PARENTS_PATH):
     PARENTS_PATH = os.path.join(PROJECT_ROOT, "parents.pkl")
 
-OUTPUT_GRAPH_PATH = os.path.join(PROJECT_ROOT, "f1-rag-chatbot", "data", "fia_knowledge_graph.pkl")
+OUTPUT_GRAPH_PATH = os.path.join(PROJECT_ROOT, "data", "fia_knowledge_graph.pkl")
 os.makedirs(os.path.dirname(OUTPUT_GRAPH_PATH), exist_ok=True)
 
 # Key FIA F1 domain entities to map into graph

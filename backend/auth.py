@@ -2,7 +2,7 @@ import os
 
 from backend.logger import logger
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pathlib import Path
 
@@ -20,16 +20,18 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 security = HTTPBearer()
 
-SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-pitwall-key-for-dev-only")
+SECRET_KEY = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15  # 15 minutes
 REFRESH_TOKEN_EXPIRE_DAYS = 7     # 7 days
 
+
 def init_db():
     if SUPABASE_URL:
-        logger.info("Using Supabase for users DB. Skipping local initialization.")
+        logger.info(
+            "Using Supabase for users DB. Skipping local initialization.")
         return
-        
+
     # Ensure data dir exists
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
@@ -45,13 +47,17 @@ def init_db():
     conn.close()
     logger.info("User database initialized at %s", DB_PATH)
 
+
 init_db()
 
 # ---------------------------------------------------------------------------
 # Password Hashing (using bcrypt directly — no passlib)
 # ---------------------------------------------------------------------------
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
 
 def get_password_hash(password: str) -> str:
     salt = bcrypt.gensalt()
@@ -60,28 +66,34 @@ def get_password_hash(password: str) -> str:
 # ---------------------------------------------------------------------------
 # JWT Management
 # ---------------------------------------------------------------------------
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     logger.info("Access token created for user=%s", data.get("sub", "unknown"))
     return encoded_jwt
 
+
 def create_refresh_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    logger.info("Refresh token created for user=%s", data.get("sub", "unknown"))
+    logger.info("Refresh token created for user=%s",
+                data.get("sub", "unknown"))
     return encoded_jwt
 
 # ---------------------------------------------------------------------------
 # FastAPI Dependency
 # ---------------------------------------------------------------------------
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     token = credentials.credentials
     credentials_exception = HTTPException(
@@ -92,30 +104,33 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
+        if username is None or payload.get("type") == "refresh":
             raise credentials_exception
     except jwt.PyJWTError as e:
         logger.warning("JWT decode failed: %s", e)
         raise credentials_exception
-        
+
     # Verify user exists in db
     user = None
     if SUPABASE_URL:
         import psycopg2
         conn = psycopg2.connect(SUPABASE_URL)
         cursor = conn.cursor()
-        cursor.execute("SELECT username FROM users WHERE username = %s", (username,))
+        cursor.execute(
+            "SELECT username FROM users WHERE username = %s", (username,))
         user = cursor.fetchone()
         conn.close()
     else:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
-        cursor.execute("SELECT username FROM users WHERE username = ?", (username,))
+        cursor.execute(
+            "SELECT username FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
         conn.close()
-    
+
     if user is None:
-        logger.warning("Token valid but user not found in DB: user=%s", username)
+        logger.warning(
+            "Token valid but user not found in DB: user=%s", username)
         raise credentials_exception
-        
+
     return username

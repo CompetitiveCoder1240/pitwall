@@ -284,8 +284,6 @@ def make_regulation_node(retriever, parent_vault: dict, bm25_fallback_retriever=
     import networkx as nx
 
     graph_path = os.path.join(PROJECT_ROOT, "data", "fia_knowledge_graph.pkl")
-    if not os.path.exists(graph_path):
-        graph_path = os.path.join(PROJECT_ROOT, "f1-rag-chatbot", "data", "fia_knowledge_graph.pkl")
 
     kg = None
     if os.path.exists(graph_path):
@@ -541,8 +539,9 @@ def make_citation_guardrail_node():
         for article_num in cited_articles:
             # Clean trailing punctuation
             clean_num = article_num.rstrip(".,;")
-            # Check if this article number or base section appears in regulation_context
-            if clean_num in regulation_context or clean_num.lower() in regulation_context.lower():
+            # Check if this article number or base section appears in regulation_context as a distinct word
+            pattern = rf"\b{re.escape(clean_num)}\b"
+            if re.search(pattern, regulation_context, re.IGNORECASE):
                 verified_count += 1
             else:
                 unverified_citations.append(clean_num)

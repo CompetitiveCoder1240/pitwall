@@ -1,0 +1,15 @@
+.env
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+env/
+.venv/
+fastf1_cache/
+chroma_parent_child_db/

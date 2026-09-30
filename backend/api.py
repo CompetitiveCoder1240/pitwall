@@ -81,9 +81,16 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Parse frontend URL from environment (for production)
+frontend_url = os.getenv("FRONTEND_URL")
+origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+if frontend_url:
+    # Handle comma-separated lists if they have multiple custom domains
+    origins.extend([url.strip() for url in frontend_url.split(",")])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

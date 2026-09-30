@@ -43,7 +43,7 @@ fastf1.Cache.enable_cache(str(CACHE_DIR))
 # ---------------------------------------------------------------------------
 # Seasons & calendar
 # ---------------------------------------------------------------------------
-SEASONS = [2022, 2023, 2024, 2025, 2026]
+SEASONS = [2022, 2023, 2024, 2025]
 
 # Pirelli compound naming: C1 (hardest) to C5 (softest)
 # FastF1 uses simplified names: HARD, MEDIUM, SOFT
@@ -269,22 +269,41 @@ def extract_race_data(season: int, conn: sqlite3.Connection, start_round: int = 
                 if valid_laps.empty or stint_length < 3:
                     continue
 
+                # Remove the first lap of the stint (often an outlier due to tyre warm-up)
+                if len(valid_laps) > 4:
+                    valid_laps = valid_laps.iloc[1:]
+
                 lap_times = valid_laps["LapTime"].dt.total_seconds()
 
-                # Filter extreme outliers (SC laps, formation laps)
+                # Tighter outlier filtering using median
                 median_time = lap_times.median()
-                lap_times = lap_times[(lap_times > median_time * 0.95) & (lap_times < median_time * 1.10)]
+                # F1 laps rarely naturally improve by > 2% or degrade by > 5% without anomalies (traffic, lockups)
+                tight_mask = (lap_times > median_time * 0.98) & (lap_times < median_time * 1.05)
+                lap_times = lap_times[tight_mask]
+                lap_numbers = valid_laps["LapNumber"][tight_mask]
 
                 if len(lap_times) < 3:
                     continue
 
                 avg_lap_time = float(lap_times.mean())
 
-                # Degradation: linear regression slope of lap time vs lap number
-                x = np.arange(len(lap_times))
-                if len(x) >= 3:
-                    coeffs = np.polyfit(x, lap_times.values, 1)
-                    deg_per_lap = float(coeffs[0])  # seconds per lap of degradation
+                # --- TIER 1: Fuel-Corrected Linear Regression ---
+                # Fuel burn is ~1.75kg/lap. Weight penalty is ~0.03s/kg. 
+                # Therefore, the car naturally gets ~0.0525s faster every lap due to fuel.
+                FUEL_EFFECT_PER_LAP = 0.0525
+                
+                # Calculate tyre age (laps since start of stint)
+                # We use actual lap numbers, not np.arange, because we may have dropped some outlier laps!
+                tyre_age = lap_numbers.values - start_lap
+                
+                # Normalize lap times to remove the fuel effect (adding time back to later laps)
+                corrected_lap_times = lap_times.values + (tyre_age * FUEL_EFFECT_PER_LAP)
+
+                if len(tyre_age) >= 3:
+                    coeffs = np.polyfit(tyre_age, corrected_lap_times, 1)
+                    raw_deg = float(coeffs[0])
+                    # Clamp degradation: tyres always degrade, so minimum is 0.005s per lap
+                    deg_per_lap = max(raw_deg, 0.005)
                 else:
                     deg_per_lap = None
 
