@@ -61,6 +61,15 @@ def create_postgres_tables(conn):
             avg_medium_deg_per_lap DOUBLE PRECISION,
             avg_hard_deg_per_lap DOUBLE PRECISION
         );
+        
+        CREATE TABLE IF NOT EXISTS lap_times (
+            id SERIAL PRIMARY KEY,
+            circuit_id INTEGER REFERENCES circuits(id),
+            driver VARCHAR(100),
+            lap_number INTEGER,
+            lap_time_seconds DOUBLE PRECISION,
+            compound VARCHAR(50)
+        );
     """)
     conn.commit()
 
@@ -103,6 +112,7 @@ if __name__ == "__main__":
         migrate_table(TELEMETRY_DB, "pit_stop_deltas", pg_conn, ["circuit_id", "driver", "lap_number", "pit_duration_seconds", "compound_before", "compound_after"])
         migrate_table(TELEMETRY_DB, "tyre_stints", pg_conn, ["circuit_id", "driver", "stint_number", "compound", "start_lap", "end_lap", "stint_length", "avg_lap_time_seconds", "degradation_per_lap"])
         migrate_table(TELEMETRY_DB, "circuit_summaries", pg_conn, ["circuit_name", "total_races_sampled", "avg_pit_duration", "avg_green_flag_pit_loss", "avg_soft_deg_per_lap", "avg_medium_deg_per_lap", "avg_hard_deg_per_lap"])
+        migrate_table(TELEMETRY_DB, "lap_times", pg_conn, ["circuit_id", "driver", "lap_number", "lap_time_seconds", "compound"])
 
     pg_conn.close()
     print("Migration complete!")

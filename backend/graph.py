@@ -90,7 +90,8 @@ class PitWallRouterOutput(BaseModel):
     needs_strategy: bool = Field(default=False, description="True if asking for race strategy, pit decisions, or lap projections.")
     
     telemetry_circuit: Optional[str] = Field(default=None, description="Circuit name for telemetry (e.g. 'Monza').")
-    telemetry_query_type: Optional[str] = Field(default="summary", description="Type: 'summary', 'pit_stops', 'tyre_stints', or 'all_circuits'.")
+    telemetry_query_type: Optional[str] = Field(default="summary", description="Type: 'summary', 'pit_stops', 'tyre_stints', 'lap_times', or 'all_circuits'.")
+    telemetry_driver: Optional[str] = Field(default=None, description="3-letter driver code (e.g., 'VER', 'HAM', 'RUS') for lap_times or pit_stops.")
     
     strategy_circuit: Optional[str] = Field(default=None, description="Circuit name for strategy calculation (e.g. 'Silverstone').")
     strategy_current_lap: Optional[int] = Field(default=1, description="Current lap number (default 1 if unknown).")
@@ -214,7 +215,7 @@ def make_router_node(llm):
             "Analyze the user's input and determine which data sources are needed, extracting parameters.\n"
             "Rules:\n"
             "- needs_regulations = true if the question asks about FIA rules, technical/sporting/financial specifications.\n"
-            "- needs_telemetry = true if the question asks about past F1 race data (2022-2025), pit stop durations, tyre degradation, or lap times.\n"
+            "- needs_telemetry = true if the question asks about past F1 race data (2022-2026), pit stop durations, tyre degradation, or lap times.\n"
             "- needs_strategy = true if the question involves pit stop strategy decisions, stint projections, or race time calculations.\n"
             "Extract circuit names (e.g., 'Monza', 'Silverstone') and strategy details (lap numbers, flag conditions, compounds) if present.\n"
         )),
@@ -244,6 +245,7 @@ def make_router_node(llm):
             telemetry_params = {
                 "telemetry_circuit": result.telemetry_circuit,
                 "telemetry_query_type": result.telemetry_query_type,
+                "telemetry_driver": result.telemetry_driver,
             }
             strategy_params = {
                 "strategy_circuit": result.strategy_circuit,
@@ -399,11 +401,15 @@ def make_telemetry_node():
         if not circuit_name:
             return {"telemetry_data": "No specific circuit identified in the query. Available circuits can be listed with the telemetry tool."}
 
-        # Get circuit summary
-        summary = query_telemetry.invoke({
+        # Get telemetry data
+        args = {
             "circuit_name": circuit_name,
             "query_type": params.get("telemetry_query_type", "summary"),
-        })
+        }
+        if params.get("telemetry_driver"):
+            args["driver"] = params.get("telemetry_driver")
+
+        summary = query_telemetry.invoke(args)
 
         result = summary
         logger.info(f"Telemetry Node result length: {len(result)}")

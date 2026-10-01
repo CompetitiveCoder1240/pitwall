@@ -43,7 +43,7 @@ fastf1.Cache.enable_cache(str(CACHE_DIR))
 # ---------------------------------------------------------------------------
 # Seasons & calendar
 # ---------------------------------------------------------------------------
-SEASONS = [2022, 2023, 2024, 2025]
+SEASONS = [2022, 2023, 2024, 2025, 2026]
 
 # Pirelli compound naming: C1 (hardest) to C5 (softest)
 # FastF1 uses simplified names: HARD, MEDIUM, SOFT
@@ -121,6 +121,19 @@ def create_database(conn: sqlite3.Connection):
             UNIQUE(circuit_name)
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lap_times (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            circuit_id INTEGER NOT NULL,
+            driver TEXT NOT NULL,
+            lap_number INTEGER NOT NULL,
+            lap_time_seconds REAL,
+            compound TEXT,
+            FOREIGN KEY (circuit_id) REFERENCES circuits(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lap_times_circuit_driver ON lap_times(circuit_id, driver)")
 
     conn.commit()
     print("[DB] Schema created successfully.")
@@ -201,6 +214,21 @@ def extract_race_data(season: int, conn: sqlite3.Connection, start_round: int = 
         if laps is None or laps.empty:
             print("NO LAPS DATA")
             continue
+            
+        # --- Lap Times ---
+        for _, lap in laps.iterrows():
+            driver = lap.get("Driver")
+            lap_num = lap.get("LapNumber")
+            lap_time = lap.get("LapTime")
+            compound = lap.get("Compound")
+            lap_time_seconds = lap_time.total_seconds() if pd.notna(lap_time) else None
+            
+            if pd.notna(driver) and pd.notna(lap_num):
+                cursor.execute(
+                    "INSERT INTO lap_times (circuit_id, driver, lap_number, lap_time_seconds, compound) VALUES (?, ?, ?, ?, ?)",
+                    (circuit_id, driver, int(lap_num), lap_time_seconds, compound),
+                )
+        conn.commit()
 
         # --- Pit stops ---
         # For each driver, find laps where PitInTime is set (in-lap) and

@@ -24,8 +24,9 @@ def query_telemetry(
     query_type: str = "summary",
     compound: Optional[str] = None,
     season: Optional[int] = None,
+    driver: Optional[str] = None,
 ) -> str:
-    """Query the PitWall telemetry database for F1 circuit data from 2022-2025.
+    """Query the PitWall telemetry database for F1 circuit data from 2022-2026.
 
     Args:
         circuit_name: The circuit/location name (e.g. 'Monza', 'Silverstone', 'Sakhir', 'Monaco').
@@ -34,9 +35,11 @@ def query_telemetry(
             - 'summary': Average pit stop duration, tyre degradation rates, and race count for the circuit.
             - 'pit_stops': Detailed pit stop records (duration, compounds before/after) for the circuit.
             - 'tyre_stints': Detailed tyre stint data (degradation per lap, avg lap time) for the circuit.
+            - 'lap_times': Detailed individual lap times for a specific driver and race.
             - 'all_circuits': List all available circuits and their race counts (ignores circuit_name).
         compound: Optional tyre compound filter for tyre_stints query ('SOFT', 'MEDIUM', 'HARD').
-        season: Optional season year filter (2022, 2023, 2024, or 2025).
+        season: Optional season year filter (2022, 2023, 2024, 2025, or 2026).
+        driver: Optional 3-letter driver code filter (e.g. 'VER', 'HAM', 'RUS') for lap_times or pit_stops.
 
     Returns:
         Formatted string with the query results.
@@ -95,6 +98,9 @@ def query_telemetry(
         if season:
             sql += " AND c.season = ?"
             params.append(season)
+        if driver:
+            sql += " AND p.driver = ?"
+            params.append(driver.upper())
         sql += " ORDER BY c.season, p.lap_number LIMIT 50"
         rows = _query_db(sql, tuple(params))
         if not rows:
@@ -124,6 +130,9 @@ def query_telemetry(
         if season:
             sql += " AND c.season = ?"
             params.append(season)
+        if driver:
+            sql += " AND t.driver = ?"
+            params.append(driver.upper())
         sql += " ORDER BY c.season, t.driver, t.stint_number LIMIT 50"
         rows = _query_db(sql, tuple(params))
         if not rows:
@@ -140,8 +149,35 @@ def query_telemetry(
             )
         return "\n".join(lines)
 
+    if query_type == "lap_times":
+        sql = (
+            "SELECT l.driver, l.lap_number, l.lap_time_seconds, l.compound, c.season, c.event_name "
+            "FROM lap_times l JOIN circuits c ON l.circuit_id = c.id "
+            "WHERE c.circuit_name LIKE ?"
+        )
+        params = [f"%{circuit_name}%"]
+        if season:
+            sql += " AND c.season = ?"
+            params.append(season)
+        if driver:
+            sql += " AND l.driver = ?"
+            params.append(driver.upper())
+        sql += " ORDER BY c.season, l.lap_number, l.driver LIMIT 100"
+        rows = _query_db(sql, tuple(params))
+        if not rows:
+            logger.warning(f"No {query_type} data found for circuit: {circuit_name}")
+            return f"No lap times data found for circuit matching '{circuit_name}'."
+        lines = [f"Lap times at {circuit_name} (showing up to 100):\n"]
+        for r in rows:
+            time_str = f"{r['lap_time_seconds']:.3f}s" if r["lap_time_seconds"] else "N/A"
+            lines.append(
+                f"  {r['season']} {r['event_name']} | Driver {r['driver']} | "
+                f"Lap {r['lap_number']} | Time: {time_str} | Compound: {r['compound']}"
+            )
+        return "\n".join(lines)
+
     logger.warning(f"Unknown query_type: {query_type}")
-    return f"Unknown query_type '{query_type}'. Use: summary, pit_stops, tyre_stints, or all_circuits."
+    return f"Unknown query_type '{query_type}'. Use: summary, pit_stops, tyre_stints, lap_times, or all_circuits."
 
 
 # ---------------------------------------------------------------------------
