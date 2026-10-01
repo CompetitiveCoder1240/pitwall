@@ -22,6 +22,7 @@ import asyncio
 import pickle
 from pathlib import Path
 from typing import Any, Annotated, TypedDict
+from langchain_core.runnables import RunnableConfig
 
 from backend.logger import logger
 from dotenv import load_dotenv
@@ -469,7 +470,7 @@ def make_synthesis_node(llm):
         ("human", "{input}"),
     ])
 
-    def synthesis_node(state: PitWallState) -> dict:
+    async def synthesis_node(state: PitWallState, config: RunnableConfig) -> dict:
         """Merge all tool outputs and generate final response."""
         # Build context block from available tool outputs
         context_parts = []
@@ -495,12 +496,13 @@ def make_synthesis_node(llm):
         # Generate response
         logger.info("Executing Synthesis Node...")
         try:
-            response = llm.invoke(
+            response = await llm.ainvoke(
                 synthesis_prompt.format_messages(
                     context_block=context_block,
                     input=state["user_input"],
                     chat_history=state.get("chat_history", []),
-                )
+                ),
+                config=config
             )
             final_response = _extract_text(response.content)
         except Exception as e:

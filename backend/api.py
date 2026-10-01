@@ -19,7 +19,6 @@ import re
 import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
-from collections import defaultdict
 from typing import AsyncIterator
 
 from dotenv import load_dotenv
@@ -50,7 +49,6 @@ from backend.auth import (
 # Global state
 # ---------------------------------------------------------------------------
 pitwall_graph = None
-session_histories: dict[str, list] = defaultdict(list)
 
 
 # ---------------------------------------------------------------------------
@@ -278,18 +276,34 @@ async def chat(request: Request, req: ChatRequest, current_user: str = Depends(g
     if not req.session_id or not req.message:
         raise HTTPException(status_code=400, detail="session_id and message are required.")
 
+    from backend.db import execute_query
+
     clean_message = sanitize_input(req.message)
     if not clean_message:
         raise HTTPException(status_code=400, detail="Empty or invalid message after sanitization.")
     check_prompt_injection(clean_message)
 
-    history = session_histories[req.session_id]
+    # Load history from database
+    raw_history = execute_query(
+        "SELECT role, content FROM chat_sessions WHERE session_id = ? ORDER BY id ASC", 
+        (req.session_id,), 
+        db_type="users"
+    )
+    history = []
+    for row in raw_history:
+        if row["role"] == "human":
+            history.append(HumanMessage(content=row["content"]))
+        else:
+            history.append(AIMessage(content=row["content"]))
+            
+    # Cap history context for LLM memory
+    history = history[-8:]
 
     async def event_stream():
         full_response = ""
         try:
-            # Invoke the LangGraph with the user's input and chat history
-            result = await pitwall_graph.ainvoke({
+            # Invoke the LangGraph with astream_events to catch LLM tokens
+            async for event in pitwall_graph.astream_events({
                 "user_input": clean_message,
                 "chat_history": history,
                 "needs_regulations": False,
@@ -299,23 +313,29 @@ async def chat(request: Request, req: ChatRequest, current_user: str = Depends(g
                 "telemetry_data": "",
                 "strategy_analysis": "",
                 "final_response": "",
-            })
-
-            full_response = result.get("final_response", "")
+            }, version="v2"):
+                
+                kind = event["event"]
+                # Capture standard LLM streaming events
+                if kind == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"].content
+                    if chunk:
+                        full_response += chunk
+                        yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+                        
             logger.info(f"Response generated for {current_user} - Length: {len(full_response)}")
 
-            # Stream the response in chunks for a streaming UX feel
-            chunk_size = 12
-            for i in range(0, len(full_response), chunk_size):
-                chunk = full_response[i:i + chunk_size]
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-                await asyncio.sleep(0.015)  # Simulate network streaming delay
-
-            # Persist this exchange (trim to last 8 messages)
-            history.append(HumanMessage(content=clean_message))
-            history.append(AIMessage(content=full_response))
-            if len(history) > 8:
-                session_histories[req.session_id] = history[-8:]
+            # Persist this exchange to database
+            execute_query(
+                "INSERT INTO chat_sessions (session_id, username, role, content) VALUES (?, ?, ?, ?)",
+                (req.session_id, current_user, "human", clean_message),
+                db_type="users", commit=True
+            )
+            execute_query(
+                "INSERT INTO chat_sessions (session_id, username, role, content) VALUES (?, ?, ?, ?)",
+                (req.session_id, current_user, "ai", full_response),
+                db_type="users", commit=True
+            )
 
             yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -328,7 +348,9 @@ async def chat(request: Request, req: ChatRequest, current_user: str = Depends(g
 
 @app.delete("/session/{session_id}")
 def clear_session(session_id: str, current_user: str = Depends(get_current_user)):
-    """Clears in-memory chat history for a given session."""
-    session_histories.pop(session_id, None)
+    """Clears chat history for a given session."""
+    from backend.db import execute_query
+    execute_query("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,), db_type="users", commit=True)
     logger.info(f"Session cleared: {session_id} by user: {current_user}")
     return {"status": "cleared", "session_id": session_id}
+

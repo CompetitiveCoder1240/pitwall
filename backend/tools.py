@@ -8,51 +8,11 @@ Defines @tool functions that the LangGraph Agent can call:
 """
 
 import os
-import sqlite3
-from pathlib import Path
 from typing import Optional
-
 from langchain_core.tools import tool
-
 from backend.logger import logger
 
-# ---------------------------------------------------------------------------
-# Database path — resolved relative to project root
-# ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_ROOT / "data" / "pitwall_telemetry.db"
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-
-
-def _query_db(sql: str, params: tuple = ()) -> list[dict]:
-    """Execute a read-only SQL query and return results as list of dicts.
-    Uses Supabase (PostgreSQL) if SUPABASE_URL is set, otherwise falls back to local SQLite.
-    """
-    try:
-        logger.debug(f"SQL Query: {sql[:200]}")
-        
-        if SUPABASE_URL:
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
-            # Convert SQLite '?' placeholders to PostgreSQL '%s'
-            pg_sql = sql.replace("?", "%s")
-            conn = psycopg2.connect(SUPABASE_URL)
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute(pg_sql, params)
-            results = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            return results
-        else:
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(sql, params)
-            results = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            return results
-    except Exception as e:
-        logger.error(f"Database query failed: {e}", exc_info=True)
-        return []
+from backend.db import execute_query as _query_db
 
 
 # ---------------------------------------------------------------------------
